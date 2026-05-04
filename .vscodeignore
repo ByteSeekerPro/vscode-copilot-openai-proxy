@@ -1,0 +1,13 @@
+.vscode/**
+.gitignore
+.vscodeignore
+tsconfig.json
+package-lock.json
+scripts/**
+implementation_plan.md
+vsc-lm-api-bridge-*.vsix
+**/*.ts
+**/*.map
+node_modules/**
+!node_modules/@vscode-elements/elements/dist/bundled.js
+!node_modules/@vscode/codicons/dist/**

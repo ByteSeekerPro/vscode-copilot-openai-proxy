@@ -1,0 +1,9 @@
+[project]
+name = "lm-bridge-tests"
+version = "0.1.0"
+description = "Integration tests for the VS Code LM API Bridge"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain-openai>=0.2.0",
+    "langchain-core>=0.3.0",
+]

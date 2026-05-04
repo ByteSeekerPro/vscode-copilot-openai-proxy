@@ -1,0 +1,7 @@
+implementation_plan.md
+node_modules/
+scripts/.venv/
+out/
+.vscode/
+*.vsix
+.DS_Store/

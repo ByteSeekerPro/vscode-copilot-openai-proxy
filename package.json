@@ -1,0 +1,90 @@
+{
+  "name": "vsc-lm-api-bridge",
+  "displayName": "LM API Bridge",
+  "description": "OpenAI similator. Expose VS Code Language Model API as an OpenAI-compatible web service.",
+  "version": "1.0.0",
+  "publisher": "vanlylabs",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vanlylabs/vsc-lm-api-bridge.git"
+  },
+  "categories": [
+    "Machine Learning",
+    "Programming Languages",
+    "AI",
+    "Debuggers",
+    "Other"
+  ],
+  "keywords": [
+    "OpenAI",
+    "LLM",
+    "Language Model",
+    "AI",
+    "API",
+    "Bridge",
+    "VS Code",
+    "Language Model API",
+    "OpenAI-compatible"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "vsc-lm-api-bridge-sidebar",
+          "title": "LM API Bridge",
+          "icon": "$(symbol-interface)"
+        }
+      ]
+    },
+    "views": {
+      "vsc-lm-api-bridge-sidebar": [
+        {
+          "id": "vsc-lm-api-bridge-webview",
+          "type": "webview",
+          "name": "LM API Bridge",
+          "icon": "$(symbol-interface)"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run bundle",
+    "compile": "tsc -p ./",
+    "bundle": "tsup src/extension.ts --external vscode --format cjs --minify --clean --out-dir out",
+    "package": "npx vsce package",
+    "watch": "tsup src/extension.ts --external vscode --format cjs --watch --out-dir out",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "18.x",
+    "@types/vscode": "^1.80.0",
+    "@typescript-eslint/eslint-plugin": "^6.19.1",
+    "@typescript-eslint/parser": "^6.19.1",
+    "@vscode/test-electron": "^2.3.9",
+    "cors": "^2.8.5",
+    "eslint": "^8.56.0",
+    "express": "^4.18.2",
+    "glob": "^10.3.10",
+    "mocha": "^10.2.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "@vscode-elements/elements": "^2.5.1",
+    "@vscode/codicons": "^0.0.40"
+  },
+  "extensionDependencies": [
+    "github.copilot-chat"
+  ]
+}
