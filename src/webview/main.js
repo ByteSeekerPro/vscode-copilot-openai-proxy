@@ -93,7 +93,7 @@ window.addEventListener('message', (event) => {
             updateModels(message.payload);
             break;
         case 'error':
-            console.error('[LM Bridge]', message.payload);
+            console.error('[Copilot OpenAI Proxy]', message.payload);
             break;
     }
 });

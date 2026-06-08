@@ -5,7 +5,7 @@ tsconfig.json
 package-lock.json
 scripts/**
 implementation_plan.md
-vsc-lm-api-bridge-*.vsix
+vscode-copilot-openai-proxy-*.vsix
 **/*.ts
 **/*.map
 node_modules/**

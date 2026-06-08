@@ -1,16 +1,20 @@
 {
-  "name": "vsc-lm-api-bridge",
-  "displayName": "LM API Bridge",
-  "description": "OpenAI similator. Expose VS Code Language Model API as an OpenAI-compatible web service.",
+  "name": "vscode-copilot-openai-proxy",
+  "displayName": "GitHub Copilot OpenAI Proxy",
+  "description": "Expose GitHub Copilot / VS Code Language Model API models through a local OpenAI-compatible HTTP API.",
   "version": "1.0.0",
-  "publisher": "vanlylabs",
+  "publisher": "ByteSeekerPro",
   "engines": {
     "vscode": "^1.80.0"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/vanlylabs/vsc-lm-api-bridge.git"
+    "url": "https://github.com/ByteSeekerPro/vscode-copilot-openai-proxy.git"
   },
+  "bugs": {
+    "url": "https://github.com/ByteSeekerPro/vscode-copilot-openai-proxy/issues"
+  },
+  "homepage": "https://github.com/ByteSeekerPro/vscode-copilot-openai-proxy#readme",
   "categories": [
     "Machine Learning",
     "Programming Languages",
@@ -29,24 +33,63 @@
     "Language Model API",
     "OpenAI-compatible"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
+    "commands": [
+      {
+        "command": "vscode-copilot-openai-proxy.openSettings",
+        "title": "GitHub Copilot OpenAI Proxy: Open Settings"
+      },
+      {
+        "command": "vscode-copilot-openai-proxy.showCallHistory",
+        "title": "GitHub Copilot OpenAI Proxy: Show Call History"
+      },
+      {
+        "command": "vscode-copilot-openai-proxy.clearCallHistory",
+        "title": "GitHub Copilot OpenAI Proxy: Clear Call History"
+      }
+    ],
+    "configuration": {
+      "title": "GitHub Copilot OpenAI Proxy",
+      "properties": {
+        "vscode-copilot-openai-proxy.port": {
+          "type": "integer",
+          "default": 9090,
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Local HTTP API server port."
+        },
+        "vscode-copilot-openai-proxy.callHistoryRetentionDays": {
+          "type": "integer",
+          "default": 10,
+          "minimum": 1,
+          "description": "Number of days to keep call history records. Expired entries are cleaned up automatically."
+        },
+        "vscode-copilot-openai-proxy.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start the local proxy server when the extension activates."
+        }
+      }
+    },
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "vsc-lm-api-bridge-sidebar",
-          "title": "LM API Bridge",
+          "id": "vscode-copilot-openai-proxy-sidebar",
+          "title": "Copilot OpenAI Proxy",
           "icon": "$(symbol-interface)"
         }
       ]
     },
     "views": {
-      "vsc-lm-api-bridge-sidebar": [
+      "vscode-copilot-openai-proxy-sidebar": [
         {
-          "id": "vsc-lm-api-bridge-webview",
+          "id": "vscode-copilot-openai-proxy-webview",
           "type": "webview",
-          "name": "LM API Bridge",
+          "name": "Copilot OpenAI Proxy",
           "icon": "$(symbol-interface)"
         }
       ]
@@ -60,7 +103,8 @@
     "watch": "tsup src/extension.ts --external vscode --format cjs --watch --out-dir out",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js"
+    "test": "node ./out/test/runTest.js",
+    "test:compat": "node scripts/test-compat.mjs"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

@@ -3,6 +3,7 @@ import cors from 'cors';
 import * as net from 'net';
 import * as vscode from 'vscode';
 import { LmBridge } from './lmBridge';
+import { CallHistoryStore, CallHistoryEntry } from './callHistory';
 
 export class Server {
   private app: express.Express;
@@ -13,7 +14,8 @@ export class Server {
 
   constructor(
     private lmBridge: LmBridge,
-    private outputChannel: vscode.OutputChannel
+    private outputChannel: vscode.OutputChannel,
+    private callHistoryStore: CallHistoryStore
   ) {
     this.app = express();
     this.app.use(express.json());
@@ -26,8 +28,14 @@ export class Server {
     this.verbose = enabled;
   }
 
+  /** Generate a unique call history entry ID. */
+  private static entryId(): string {
+    return `ch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
   private registerRoutes() {
     this.app.get('/v1/models', async (_req, res) => {
+      const startTime = Date.now();
       try {
         const models = await this.lmBridge.getModels();
         res.json({
@@ -39,12 +47,26 @@ export class Server {
             owned_by: 'vscode',
           })),
         });
+        this.recordEntry({
+          endpoint: '/v1/models',
+          statusCode: 200,
+          latencyMs: Date.now() - startTime,
+          success: true,
+        });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
+        this.recordEntry({
+          endpoint: '/v1/models',
+          statusCode: 500,
+          latencyMs: Date.now() - startTime,
+          success: false,
+          error: error.message,
+        });
       }
     });
 
     this.app.post('/v1/chat/completions', async (req, res) => {
+      const startTime = Date.now();
       const { model, messages, stream, temperature, max_tokens, tools } = req.body;
 
       if (this.verbose) {
@@ -117,6 +139,17 @@ export class Server {
 
           res.write('data: [DONE]\n\n');
           res.end();
+          this.recordEntry({
+            endpoint: '/v1/chat/completions',
+            model: model ?? null,
+            statusCode: 200,
+            latencyMs: Date.now() - startTime,
+            success: true,
+            streaming: true,
+            promptTokens: finalUsage?.prompt_tokens ?? null,
+            completionTokens: finalUsage?.completion_tokens ?? null,
+            totalTokens: finalUsage?.total_tokens ?? null,
+          });
         } else {
           // Non-streaming
           let fullText = '';
@@ -158,11 +191,64 @@ export class Server {
           }
 
           res.json(responseData);
+          this.recordEntry({
+            endpoint: '/v1/chat/completions',
+            model: model ?? null,
+            statusCode: 200,
+            latencyMs: Date.now() - startTime,
+            success: true,
+            streaming: false,
+            promptTokens: usage.prompt_tokens ?? null,
+            completionTokens: usage.completion_tokens ?? null,
+            totalTokens: usage.total_tokens ?? null,
+          });
         }
       } catch (error: any) {
         this.outputChannel.appendLine(`Error: ${error.message}`);
         res.status(500).json({ error: error.message });
+        this.recordEntry({
+          endpoint: '/v1/chat/completions',
+          model: model ?? null,
+          statusCode: 500,
+          latencyMs: Date.now() - startTime,
+          success: false,
+          streaming: typeof stream === 'boolean' ? stream : null,
+          error: error.message,
+        });
       }
+    });
+  }
+
+  /** Record a call history entry. Non-fatal — errors are logged, never thrown. */
+  private recordEntry(fields: {
+    endpoint: string;
+    model?: string | null;
+    statusCode?: number | null;
+    latencyMs?: number | null;
+    success?: boolean;
+    streaming?: boolean | null;
+    promptTokens?: number | null;
+    completionTokens?: number | null;
+    totalTokens?: number | null;
+    error?: string | null;
+  }): void {
+    const entry: CallHistoryEntry = {
+      id: Server.entryId(),
+      timestamp: new Date().toISOString(),
+      method: 'POST',
+      endpoint: fields.endpoint,
+      model: fields.model ?? null,
+      statusCode: fields.statusCode ?? null,
+      success: fields.success ?? true,
+      latencyMs: fields.latencyMs ?? null,
+      streaming: fields.streaming ?? null,
+      promptTokens: fields.promptTokens ?? null,
+      completionTokens: fields.completionTokens ?? null,
+      totalTokens: fields.totalTokens ?? null,
+      error: fields.error ?? null,
+    };
+    this.callHistoryStore.append(entry).catch((err) => {
+      this.outputChannel.appendLine(`[CallHistory] Write failed: ${err.message ?? err}`);
     });
   }
 

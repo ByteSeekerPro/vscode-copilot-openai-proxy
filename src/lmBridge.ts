@@ -36,7 +36,7 @@ export class LmBridge {
     }
 
     const requestOptions: vscode.LanguageModelChatRequestOptions = {
-        justification: 'LM API Bridge request',
+        justification: 'Copilot OpenAI Proxy request',
     };
 
     // Map OpenAI tools to VS Code tools

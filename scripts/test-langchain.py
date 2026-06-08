@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LangChain integration test for VS Code LM API Bridge.
+LangChain integration test for Copilot OpenAI Proxy.
 
 Verifies that the bridge exposes a valid OpenAI-compatible API by running
 non-streaming and (optionally) streaming completions through LangChain.
@@ -24,7 +24,7 @@ Alternatively, with plain python
 Prerequisites
 ─────────────
     - uv  (https://docs.astral.sh/uv/) — or pip + python 3.11+
-    - VS Code LM API Bridge server must be running before executing this script
+    - Copilot OpenAI Proxy server must be running before executing this script
 """
 
 import argparse
@@ -100,7 +100,7 @@ def test_models_endpoint(base_url: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="LangChain integration test for VS Code LM API Bridge",
+        description="LangChain integration test for Copilot OpenAI Proxy",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--port",   type=int, default=9090,
@@ -128,8 +128,8 @@ def main() -> None:
         available = fetch_models(base_url)
         if not available:
             print(
-                "ERROR: No models returned by the bridge and --model was not specified.\n"
-                "       Make sure the LM API Bridge server is running in VS Code."
+                "ERROR: No models returned by the proxy and --model was not specified.\n"
+                "       Make sure the Copilot OpenAI Proxy server is running in VS Code."
             )
             sys.exit(1)
         model_id = available[0]

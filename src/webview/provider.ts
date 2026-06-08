@@ -165,7 +165,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         <link href="${styleUri}" rel="stylesheet">
         <link href="${codiconsUri}" rel="stylesheet">
         <script type="module" src="${toolkitUri}"></script>
-        <title>LM API Bridge</title>
+        <title>Copilot OpenAI Proxy</title>
       </head>
       <body data-is-running="${isRunning}"
             data-port="${this._state.port || ''}"
