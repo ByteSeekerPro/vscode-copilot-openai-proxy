@@ -50,6 +50,10 @@
       {
         "command": "vscode-copilot-openai-proxy.clearCallHistory",
         "title": "GitHub Copilot OpenAI Proxy: Clear Call History"
+      },
+      {
+        "command": "vscode-copilot-openai-proxy.showSessionMetrics",
+        "title": "GitHub Copilot OpenAI Proxy: Show Session Metrics"
       }
     ],
     "configuration": {
@@ -103,7 +107,7 @@
     "watch": "tsup src/extension.ts --external vscode --format cjs --watch --out-dir out",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js",
+    "test": "npm run bundle",
     "test:compat": "node scripts/test-compat.mjs"
   },
   "devDependencies": {

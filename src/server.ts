@@ -2,8 +2,9 @@ import express from 'express';
 import cors from 'cors';
 import * as net from 'net';
 import * as vscode from 'vscode';
-import { LmBridge } from './lmBridge';
+import { LmBridge, validateMessages, ContentValidationError } from './lmBridge';
 import { CallHistoryStore, CallHistoryEntry } from './callHistory';
+import { SessionMetricsStore } from './sessionMetrics';
 
 export class Server {
   private app: express.Express;
@@ -15,10 +16,13 @@ export class Server {
   constructor(
     private lmBridge: LmBridge,
     private outputChannel: vscode.OutputChannel,
-    private callHistoryStore: CallHistoryStore
+    private callHistoryStore: CallHistoryStore,
+    private sessionMetricsStore: SessionMetricsStore
   ) {
     this.app = express();
-    this.app.use(express.json());
+    // 10 MB body limit — agents (Zoo Code, LangChain, etc.) may send large
+    // conversation histories with tool results. Express default is 100 KB.
+    this.app.use(express.json({ limit: '10mb' }));
     this.app.use(cors());
 
     this.registerRoutes();
@@ -67,11 +71,31 @@ export class Server {
 
     this.app.post('/v1/chat/completions', async (req, res) => {
       const startTime = Date.now();
-      const { model, messages, stream, temperature, max_tokens, tools } = req.body;
+      const { model, messages, stream, temperature, max_tokens, tools, tool_choice } = req.body;
 
       if (this.verbose) {
         this.outputChannel.appendLine(`[Request] Model: ${model}, Stream: ${!!stream}`);
         this.outputChannel.appendLine(`[Request Body] ${JSON.stringify(req.body, null, 2)}`);
+      }
+
+      // Validate message content shapes before passing to VS Code LM API.
+      // This returns a clean 400 for unsupported content (e.g. image_url)
+      // instead of letting VS Code throw a 500.
+      const validationError = validateMessages(messages);
+      if (validationError) {
+        res.status(validationError.status).json({
+          error: { message: validationError.error, type: 'invalid_request_error', code: null },
+        });
+        this.recordEntry({
+          endpoint: '/v1/chat/completions',
+          model: model ?? null,
+          statusCode: validationError.status,
+          latencyMs: Date.now() - startTime,
+          success: false,
+          streaming: typeof stream === 'boolean' ? stream : null,
+          error: validationError.error,
+        });
+        return;
       }
 
       try {
@@ -80,7 +104,7 @@ export class Server {
           res.setHeader('Cache-Control', 'no-cache');
           res.setHeader('Connection', 'keep-alive');
 
-          const responseStream = this.lmBridge.streamChatCompletion(model, messages, { temperature, max_tokens, stream }, tools);
+          const responseStream = this.lmBridge.streamChatCompletion(model, messages, { temperature, max_tokens, stream }, tools, tool_choice);
 
           let finalUsage: any = null;
           for await (const chunk of responseStream) {
@@ -154,8 +178,8 @@ export class Server {
           // Non-streaming
           let fullText = '';
           let usage: any = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-          let tool_calls: any[] = [];
-          const responseStream = this.lmBridge.streamChatCompletion(model, messages, { temperature, max_tokens, stream: false }, tools);
+          const tool_calls: any[] = [];
+          const responseStream = this.lmBridge.streamChatCompletion(model, messages, { temperature, max_tokens, stream: false }, tools, tool_choice);
           
           for await (const chunk of responseStream) {
             if (typeof chunk === 'string') {
@@ -204,12 +228,21 @@ export class Server {
           });
         }
       } catch (error: any) {
+        const statusCode = error instanceof ContentValidationError ? 400 : 500;
         this.outputChannel.appendLine(`Error: ${error.message}`);
-        res.status(500).json({ error: error.message });
+        if (statusCode === 400) {
+          res.status(400).json({
+            error: { message: error.message, type: 'invalid_request_error', code: null },
+          });
+        } else {
+          res.status(500).json({
+            error: { message: error.message, type: 'server_error', code: 'internal_error' },
+          });
+        }
         this.recordEntry({
           endpoint: '/v1/chat/completions',
           model: model ?? null,
-          statusCode: 500,
+          statusCode: statusCode,
           latencyMs: Date.now() - startTime,
           success: false,
           streaming: typeof stream === 'boolean' ? stream : null,
@@ -232,9 +265,10 @@ export class Server {
     totalTokens?: number | null;
     error?: string | null;
   }): void {
+    const timestamp = new Date().toISOString();
     const entry: CallHistoryEntry = {
       id: Server.entryId(),
-      timestamp: new Date().toISOString(),
+      timestamp,
       method: 'POST',
       endpoint: fields.endpoint,
       model: fields.model ?? null,
@@ -249,6 +283,22 @@ export class Server {
     };
     this.callHistoryStore.append(entry).catch((err) => {
       this.outputChannel.appendLine(`[CallHistory] Write failed: ${err.message ?? err}`);
+    });
+
+    // Record into in-memory session metrics (independent of persistent call history).
+    this.sessionMetricsStore.record({
+      timestamp,
+      endpoint: fields.endpoint,
+      method: 'POST',
+      model: fields.model ?? null,
+      success: fields.success ?? true,
+      statusCode: fields.statusCode ?? null,
+      latencyMs: fields.latencyMs ?? null,
+      streaming: fields.streaming ?? null,
+      promptTokens: fields.promptTokens ?? null,
+      completionTokens: fields.completionTokens ?? null,
+      totalTokens: fields.totalTokens ?? null,
+      error: fields.error ?? null,
     });
   }
 

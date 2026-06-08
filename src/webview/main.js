@@ -1,7 +1,6 @@
 const vscode = acquireVsCodeApi();
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
-const portInput              = document.getElementById('port');
 const modelSelect            = document.getElementById('model');
 const refreshModelsBtn       = document.getElementById('refreshModels');
 const verboseLoggingCheckbox = document.getElementById('verboseLogging');
@@ -9,22 +8,103 @@ const toggleBtn              = document.getElementById('toggleBtn');
 const statusDot              = document.getElementById('statusDot');
 const statusText             = document.getElementById('statusText');
 
+// Status detail elements
+const detailPort             = document.getElementById('detailPort');
+const detailBaseUrl          = document.getElementById('detailBaseUrl');
+const detailAutostart        = document.getElementById('detailAutostart');
+
+// URL display
+const serverUrl              = document.getElementById('serverUrl');
+const copyUrlBtn             = document.getElementById('copyUrl');
+
+// Settings
+const openSettingsBtn        = document.getElementById('openSettings');
+
+// Quick copy buttons
+const copyBaseUrlBtn         = document.getElementById('copyBaseUrl');
+const copyModelsUrlBtn       = document.getElementById('copyModelsUrl');
+const copyCurlBtn            = document.getElementById('copyCurl');
+
+// Model metadata
+const modelMetadataSection   = document.getElementById('modelMetadataSection');
+const metaId                 = document.getElementById('metaId');
+const metaName               = document.getElementById('metaName');
+const metaVendor             = document.getElementById('metaVendor');
+const metaFamily             = document.getElementById('metaFamily');
+const metaVersion            = document.getElementById('metaVersion');
+const metaMaxTokens          = document.getElementById('metaMaxTokens');
+
+// Pricing elements
+const pricingNoData          = document.getElementById('pricingNoData');
+const pricingInputCost       = document.getElementById('pricingInputCost');
+const pricingCacheCost       = document.getElementById('pricingCacheCost');
+const pricingOutputCost      = document.getElementById('pricingOutputCost');
+const pricingCategory        = document.getElementById('pricingCategory');
+const pricingRaw             = document.getElementById('pricingRaw');
+const metaInputCost          = document.getElementById('metaInputCost');
+const metaCacheCost          = document.getElementById('metaCacheCost');
+const metaOutputCost         = document.getElementById('metaOutputCost');
+const metaPriceCategory      = document.getElementById('metaPriceCategory');
+const metaPricingRaw         = document.getElementById('metaPricingRaw');
+
+// Raw metadata
+const rawMetadataSection     = document.getElementById('rawMetadataSection');
+const rawMetadataNoModel     = document.getElementById('rawMetadataNoModel');
+const rawMetadataJson        = document.getElementById('rawMetadataJson');
+const rawMetadataContent     = document.getElementById('rawMetadataContent');
+const copyRawMetadataBtn     = document.getElementById('copyRawMetadata');
+const toggleRawMetadataBtn   = document.getElementById('toggleRawMetadata');
+const rawMetaToggleIcon      = document.getElementById('rawMetaToggleIcon');
+
+// Session metrics
+const mSessionStarted        = document.getElementById('mSessionStarted');
+const mServerStatus          = document.getElementById('mServerStatus');
+const mActiveModel           = document.getElementById('mActiveModel');
+const mTotalReqs             = document.getElementById('mTotalReqs');
+const mSuccessReqs           = document.getElementById('mSuccessReqs');
+const mFailedReqs            = document.getElementById('mFailedReqs');
+const mModelsReqs            = document.getElementById('mModelsReqs');
+const mChatReqs              = document.getElementById('mChatReqs');
+const mStreamingReqs         = document.getElementById('mStreamingReqs');
+const mNonStreamingReqs      = document.getElementById('mNonStreamingReqs');
+const mPromptTokens          = document.getElementById('mPromptTokens');
+const mCompletionTokens      = document.getElementById('mCompletionTokens');
+const mTotalTokens           = document.getElementById('mTotalTokens');
+const mAvgLatency            = document.getElementById('mAvgLatency');
+const mLastRequest           = document.getElementById('mLastRequest');
+const mLastModel             = document.getElementById('mLastModel');
+const mLastError             = document.getElementById('mLastError');
+const refreshMetricsBtn      = document.getElementById('refreshMetrics');
+const resetMetricsBtn        = document.getElementById('resetMetrics');
+const perModelMetricsSection = document.getElementById('perModelMetricsSection');
+const perModelMetricsList    = document.getElementById('perModelMetricsList');
+
+// Call history
+const callHistoryList        = document.getElementById('callHistoryList');
+const refreshCallHistoryBtn  = document.getElementById('refreshCallHistory');
+const showFullHistoryBtn     = document.getElementById('showFullHistory');
+const clearHistoryBtn        = document.getElementById('clearHistory');
+
 // ── State — initialized from data attributes stamped by the extension host  ───
-// These are the single source of truth for validation; updated on user input.
 let isRunning    = document.body.dataset.isRunning === 'true';
-let currentPort  = parseInt(document.body.dataset.port  || '0', 10);
 let currentModel = document.body.dataset.selectedModel  || '';
+let baseUrl      = document.body.dataset.baseUrl  || '';
+let modelsUrl    = document.body.dataset.modelsUrl || '';
+let curlCmd      = document.body.dataset.curlCmd   || '';
+
+// Raw metadata collapsed state
+let rawMetaCollapsed = false;
+// Store raw metadata text for copy
+let rawMetadataText = '';
 
 // ── Toggle button validation ──────────────────────────────────────────────────
-// When stopped: Start requires both a valid port and a selected model.
-// When running: Stop is always available.
 function validateToggleBtn() {
     if (!toggleBtn) { return; }
     if (isRunning) {
         toggleBtn.removeAttribute('disabled');
         return;
     }
-    const canStart = currentPort > 0 && currentModel !== '';
+    const canStart = currentModel !== '';
     if (canStart) {
         toggleBtn.removeAttribute('disabled');
     } else {
@@ -33,25 +113,58 @@ function validateToggleBtn() {
 }
 
 // ── Status update (called by 'statusUpdate' messages) ────────────────────────
-function updateStatus(running) {
-    isRunning = running;
+function updateStatus(payload) {
+    isRunning = payload.isRunning;
 
+    // Update status indicator
     if (toggleBtn) {
-        toggleBtn.textContent = running ? 'Stop Server' : 'Start Server';
-        toggleBtn.setAttribute('appearance', running ? 'secondary' : 'primary');
+        toggleBtn.textContent = isRunning ? 'Stop Server' : 'Start Server';
+        toggleBtn.setAttribute('appearance', isRunning ? 'secondary' : 'primary');
     }
     if (statusDot) {
-        statusDot.className = running ? 'status-dot running' : 'status-dot';
+        statusDot.className = isRunning ? 'status-dot running' : 'status-dot';
     }
     if (statusText) {
-        statusText.textContent = running ? 'Running' : 'Stopped';
+        statusText.textContent = isRunning ? 'RUNNING' : 'STOPPED';
+    }
+
+    // Update status details
+    if (detailPort && payload.port != null) {
+        detailPort.textContent = payload.port;
+    }
+    if (detailBaseUrl && payload.baseUrl) {
+        detailBaseUrl.textContent = payload.baseUrl;
+    }
+    if (detailAutostart) {
+        detailAutostart.textContent = payload.autoStart ? 'Enabled' : 'Disabled';
+    }
+
+    // Update URL displays
+    if (payload.baseUrl) {
+        baseUrl = payload.baseUrl;
+        modelsUrl = baseUrl.replace('/v1', '/v1/models');
+        curlCmd = 'curl ' + modelsUrl;
+
+        if (serverUrl) { serverUrl.textContent = baseUrl; }
+
+        const copyBaseUrlLabel = document.getElementById('copyBaseUrlLabel');
+        const copyModelsUrlLabel = document.getElementById('copyModelsUrlLabel');
+        const copyCurlLabel = document.getElementById('copyCurlLabel');
+        if (copyBaseUrlLabel) { copyBaseUrlLabel.textContent = baseUrl; }
+        if (copyModelsUrlLabel) { copyModelsUrlLabel.textContent = modelsUrl; }
+        if (copyCurlLabel) { copyCurlLabel.textContent = curlCmd; }
+    }
+
+    // Update server status in metrics
+    if (mServerStatus) {
+        mServerStatus.textContent = isRunning ? 'Running' : 'Stopped';
     }
 
     // Disable config inputs while the server is running
-    const configInputs = [portInput, modelSelect, refreshModelsBtn, verboseLoggingCheckbox];
+    const configInputs = [modelSelect, refreshModelsBtn, verboseLoggingCheckbox];
     for (const el of configInputs) {
         if (!el) { continue; }
-        if (running) {
+        if (isRunning) {
             el.setAttribute('disabled', 'disabled');
         } else {
             el.removeAttribute('disabled');
@@ -62,7 +175,6 @@ function updateStatus(running) {
 }
 
 // ── Model list update (called by 'models' messages) ───────────────────────────
-// payload: { models: string[], selectedModel: string }
 function updateModels({ models, selectedModel }) {
     if (!modelSelect) { return; }
 
@@ -79,7 +191,261 @@ function updateModels({ models, selectedModel }) {
         modelSelect.appendChild(option);
     });
 
+    // Update active model in metrics
+    if (mActiveModel) {
+        mActiveModel.textContent = currentModel || '\u2014';
+    }
+
     validateToggleBtn();
+}
+
+// ── Model metadata update (called by 'modelMetadata' messages) ────────────────
+function updateModelMetadata(metadata) {
+    if (!modelMetadataSection) { return; }
+
+    if (!metadata) {
+        modelMetadataSection.style.display = 'none';
+        return;
+    }
+
+    modelMetadataSection.style.display = '';
+    if (metaId) { metaId.textContent = metadata.id || '\u2014'; }
+    if (metaName) { metaName.textContent = metadata.name || '\u2014'; }
+    if (metaVendor) { metaVendor.textContent = metadata.vendor || '\u2014'; }
+    if (metaFamily) { metaFamily.textContent = metadata.family || '\u2014'; }
+    if (metaVersion) { metaVersion.textContent = metadata.version || '\u2014'; }
+    if (metaMaxTokens) {
+        metaMaxTokens.textContent = metadata.maxInputTokens != null
+            ? metadata.maxInputTokens.toLocaleString()
+            : '\u2014';
+    }
+
+    // Pricing display — only show rows when raw model metadata provides pricing fields.
+    const pricing = metadata.pricing;
+    const hasPricing = pricing && (
+        typeof pricing.inputCost === 'number' ||
+        typeof pricing.outputCost === 'number' ||
+        typeof pricing.cacheCost === 'number' ||
+        typeof pricing.priceCategory === 'string' ||
+        typeof pricing.raw === 'string'
+    );
+
+    if (pricingNoData) { pricingNoData.style.display = hasPricing ? 'none' : ''; }
+    if (pricingInputCost) {
+        if (hasPricing && typeof pricing.inputCost === 'number') {
+            pricingInputCost.style.display = '';
+            if (metaInputCost) { metaInputCost.textContent = pricing.inputCost + ' AICs/1M tokens'; }
+        } else {
+            pricingInputCost.style.display = 'none';
+        }
+    }
+    if (pricingCacheCost) {
+        if (hasPricing && typeof pricing.cacheCost === 'number') {
+            pricingCacheCost.style.display = '';
+            if (metaCacheCost) { metaCacheCost.textContent = pricing.cacheCost + ' AICs/1M tokens'; }
+        } else {
+            pricingCacheCost.style.display = 'none';
+        }
+    }
+    if (pricingOutputCost) {
+        if (hasPricing && typeof pricing.outputCost === 'number') {
+            pricingOutputCost.style.display = '';
+            if (metaOutputCost) { metaOutputCost.textContent = pricing.outputCost + ' AICs/1M tokens'; }
+        } else {
+            pricingOutputCost.style.display = 'none';
+        }
+    }
+    if (pricingCategory) {
+        if (hasPricing && typeof pricing.priceCategory === 'string') {
+            pricingCategory.style.display = '';
+            if (metaPriceCategory) { metaPriceCategory.textContent = pricing.priceCategory; }
+        } else {
+            pricingCategory.style.display = 'none';
+        }
+    }
+    if (pricingRaw) {
+        if (hasPricing && typeof pricing.raw === 'string') {
+            pricingRaw.style.display = '';
+            if (metaPricingRaw) { metaPricingRaw.textContent = pricing.raw; }
+        } else {
+            pricingRaw.style.display = 'none';
+        }
+    }
+}
+
+// ── Raw model metadata update (called by 'rawModelMetadata' messages) ─────────
+function updateRawModelMetadata(rawData) {
+    if (!rawMetadataSection || !rawMetadataNoModel) { return; }
+
+    if (!rawData) {
+        rawMetadataSection.style.display = 'none';
+        rawMetadataNoModel.style.display = currentModel ? 'none' : '';
+        return;
+    }
+
+    rawMetadataSection.style.display = '';
+    rawMetadataNoModel.style.display = 'none';
+
+    try {
+        rawMetadataText = JSON.stringify(rawData, null, 2);
+        if (rawMetadataJson) {
+            rawMetadataJson.textContent = rawMetadataText;
+        }
+    } catch {
+        rawMetadataText = String(rawData);
+        if (rawMetadataJson) {
+            rawMetadataJson.textContent = rawMetadataText;
+        }
+    }
+
+    // Apply collapsed state
+    if (rawMetadataContent) {
+        rawMetadataContent.style.display = rawMetaCollapsed ? 'none' : '';
+    }
+    if (rawMetaToggleIcon) {
+        rawMetaToggleIcon.className = rawMetaCollapsed
+            ? 'codicon codicon-chevron-right'
+            : 'codicon codicon-chevron-down';
+    }
+}
+
+// ── Session metrics update (called by 'sessionMetrics' messages) ──────────────
+function updateSessionMetrics(metrics) {
+    if (!metrics) { return; }
+
+    if (mSessionStarted) {
+        mSessionStarted.textContent = formatTimestamp(metrics.sessionStarted) || '\u2014';
+    }
+    if (mTotalReqs) { mTotalReqs.textContent = metrics.totalRequests; }
+    if (mSuccessReqs) { mSuccessReqs.textContent = metrics.successfulRequests; }
+    if (mFailedReqs) { mFailedReqs.textContent = metrics.failedRequests; }
+    if (mModelsReqs) { mModelsReqs.textContent = metrics.modelsEndpointCount; }
+    if (mChatReqs) { mChatReqs.textContent = metrics.chatCompletionsEndpointCount; }
+    if (mStreamingReqs) { mStreamingReqs.textContent = metrics.streamingRequestCount; }
+    if (mNonStreamingReqs) { mNonStreamingReqs.textContent = metrics.nonStreamingRequestCount; }
+    if (mPromptTokens) {
+        mPromptTokens.textContent = metrics.totalPromptTokens > 0
+            ? metrics.totalPromptTokens.toLocaleString()
+            : 'Unknown';
+    }
+    if (mCompletionTokens) {
+        mCompletionTokens.textContent = metrics.totalCompletionTokens > 0
+            ? metrics.totalCompletionTokens.toLocaleString()
+            : 'Unknown';
+    }
+    if (mTotalTokens) {
+        mTotalTokens.textContent = metrics.totalTokens > 0
+            ? metrics.totalTokens.toLocaleString()
+            : 'Unknown';
+    }
+    if (mAvgLatency) {
+        mAvgLatency.textContent = metrics.averageLatencyMs > 0
+            ? metrics.averageLatencyMs + 'ms'
+            : '\u2014';
+    }
+    if (mLastRequest) {
+        mLastRequest.textContent = metrics.lastRequestTimestamp
+            ? formatTimestamp(metrics.lastRequestTimestamp)
+            : '\u2014';
+    }
+    if (mLastModel) {
+        mLastModel.textContent = metrics.lastUsedModel || '\u2014';
+    }
+    if (mLastError) {
+        mLastError.textContent = metrics.lastErrorSummary || 'None';
+        mLastError.style.color = metrics.lastErrorSummary
+            ? 'var(--vscode-charts-red)'
+            : '';
+    }
+
+    // Per-model breakdown
+    if (metrics.modelMetrics && metrics.modelMetrics.length > 0 && perModelMetricsSection && perModelMetricsList) {
+        perModelMetricsSection.style.display = '';
+        perModelMetricsList.innerHTML = metrics.modelMetrics.map(mm => {
+            const avgLat = mm.latencyCount > 0 ? Math.round(mm.latencySum / mm.latencyCount) : 0;
+            const promptTok = mm.promptTokens > 0 ? mm.promptTokens.toLocaleString() : 'Unknown';
+            const compTok = mm.completionTokens > 0 ? mm.completionTokens.toLocaleString() : 'Unknown';
+            const totalTok = mm.totalTokens > 0 ? mm.totalTokens.toLocaleString() : 'Unknown';
+            return '<div class="per-model-entry">' +
+                '<div class="per-model-header">' +
+                    '<span class="per-model-name">' + escapeHtml(mm.modelId) + '</span>' +
+                    '<span class="per-model-reqs">' + mm.requestCount + ' reqs</span>' +
+                '</div>' +
+                '<div class="per-model-details">' +
+                    '<span>ok: ' + mm.successCount + '</span>' +
+                    ' \u00b7 <span>fail: ' + mm.failureCount + '</span>' +
+                    ' \u00b7 <span>tokens: ' + promptTok + '/' + compTok + '/' + totalTok + '</span>' +
+                    ' \u00b7 <span>avg: ' + avgLat + 'ms</span>' +
+                '</div>' +
+            '</div>';
+        }).join('');
+    } else if (perModelMetricsSection) {
+        perModelMetricsSection.style.display = 'none';
+    }
+}
+
+// ── Call history update (called by 'callHistory' messages) ────────────────────
+function updateCallHistory(data) {
+    if (!callHistoryList) { return; }
+
+    const entries = data.entries || [];
+    if (entries.length === 0) {
+        callHistoryList.innerHTML = '<p class="empty-state">No recent calls.</p>';
+        return;
+    }
+
+    callHistoryList.innerHTML = entries.map(entry => {
+        const time = entry.timestamp ? formatTimestamp(entry.timestamp) : '\u2014';
+        const endpoint = entry.endpoint || '\u2014';
+        const model = entry.model || '\u2014';
+        const statusLabel = entry.success
+            ? '<span class="call-ok">OK</span>'
+            : '<span class="call-fail">FAIL</span>';
+        const latency = entry.latencyMs != null ? entry.latencyMs + 'ms' : '\u2014';
+        const streaming = entry.streaming != null ? (entry.streaming ? 'yes' : 'no') : '\u2014';
+        const tokens = (entry.promptTokens != null || entry.completionTokens != null)
+            ? (entry.promptTokens ?? '-') + '/' + (entry.completionTokens ?? '-')
+            : '';
+        const errorPart = entry.error ? '<div class="call-error">' + escapeHtml(truncate(entry.error, 60)) + '</div>' : '';
+
+        return '<div class="call-entry">' +
+            '<div class="call-header">' +
+                '<span class="call-endpoint">' + escapeHtml(endpoint) + '</span>' +
+                ' ' + statusLabel +
+                ' <span class="call-latency">' + escapeHtml(latency) + '</span>' +
+            '</div>' +
+            '<div class="call-details">' +
+                '<span>' + escapeHtml(time) + '</span>' +
+                ' \u00b7 <span>model: ' + escapeHtml(model) + '</span>' +
+                ' \u00b7 <span>stream: ' + escapeHtml(streaming) + '</span>' +
+                (tokens ? ' \u00b7 <span>tokens: ' + escapeHtml(tokens) + '</span>' : '') +
+            '</div>' +
+            errorPart +
+        '</div>';
+    }).join('');
+}
+
+function formatTimestamp(iso) {
+    try {
+        const d = new Date(iso);
+        const pad = (n) => String(n).padStart(2, '0');
+        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+            ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    } catch {
+        return iso;
+    }
+}
+
+function truncate(str, max) {
+    if (!str) { return ''; }
+    return str.length > max ? str.slice(0, max) + '...' : str;
+}
+
+function escapeHtml(str) {
+    if (!str) { return ''; }
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
 }
 
 // ── Messages from the extension host ─────────────────────────────────────────
@@ -87,10 +453,22 @@ window.addEventListener('message', (event) => {
     const message = event.data;
     switch (message.type) {
         case 'statusUpdate':
-            updateStatus(message.payload.isRunning);
+            updateStatus(message.payload);
             break;
         case 'models':
             updateModels(message.payload);
+            break;
+        case 'modelMetadata':
+            updateModelMetadata(message.payload);
+            break;
+        case 'rawModelMetadata':
+            updateRawModelMetadata(message.payload);
+            break;
+        case 'sessionMetrics':
+            updateSessionMetrics(message.payload);
+            break;
+        case 'callHistory':
+            updateCallHistory(message.payload);
             break;
         case 'error':
             console.error('[Copilot OpenAI Proxy]', message.payload);
@@ -99,30 +477,96 @@ window.addEventListener('message', (event) => {
 });
 
 // ── UI event listeners ────────────────────────────────────────────────────────
+
+// Start/Stop
 toggleBtn?.addEventListener('click', () => {
     vscode.postMessage({ type: isRunning ? 'stop' : 'start' });
 });
 
+// Refresh models
 refreshModelsBtn?.addEventListener('click', () => {
     vscode.postMessage({ type: 'refreshModels' });
 });
 
-portInput?.addEventListener('change', (e) => {
-    currentPort = parseInt(e.target.value, 10) || 0;
-    vscode.postMessage({ type: 'updateState', payload: { port: currentPort } });
-    validateToggleBtn();
-});
-
+// Model selection
 modelSelect?.addEventListener('change', (e) => {
     currentModel = e.target.value || '';
-    vscode.postMessage({ type: 'updateState', payload: { selectedModel: currentModel } });
+    vscode.postMessage({ type: 'selectModel', payload: { selectedModel: currentModel } });
     validateToggleBtn();
 });
 
+// Verbose logging
 verboseLoggingCheckbox?.addEventListener('change', (e) => {
     vscode.postMessage({ type: 'updateState', payload: { verboseLogging: e.target.checked } });
 });
 
+// Copy base URL (header copy button)
+copyUrlBtn?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'copyToClipboard', payload: { text: baseUrl } });
+});
+
+// Open settings
+openSettingsBtn?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'openSettings' });
+});
+
+// Quick copy buttons
+copyBaseUrlBtn?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'copyToClipboard', payload: { text: baseUrl } });
+});
+
+copyModelsUrlBtn?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'copyToClipboard', payload: { text: modelsUrl } });
+});
+
+copyCurlBtn?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'copyToClipboard', payload: { text: curlCmd } });
+});
+
+// Copy raw metadata
+copyRawMetadataBtn?.addEventListener('click', () => {
+    if (rawMetadataText) {
+        vscode.postMessage({ type: 'copyRawMetadata', payload: { text: rawMetadataText } });
+    }
+});
+
+// Toggle raw metadata collapse/expand
+toggleRawMetadataBtn?.addEventListener('click', () => {
+    rawMetaCollapsed = !rawMetaCollapsed;
+    if (rawMetadataContent) {
+        rawMetadataContent.style.display = rawMetaCollapsed ? 'none' : '';
+    }
+    if (rawMetaToggleIcon) {
+        rawMetaToggleIcon.className = rawMetaCollapsed
+            ? 'codicon codicon-chevron-right'
+            : 'codicon codicon-chevron-down';
+    }
+});
+
+// Refresh metrics
+refreshMetricsBtn?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'refreshMetrics' });
+});
+
+// Reset metrics
+resetMetricsBtn?.addEventListener('click', () => {
+    if (confirm('Reset all current session metrics? This will not affect persistent call history.')) {
+        vscode.postMessage({ type: 'resetSessionMetrics' });
+    }
+});
+
+// Call history buttons
+refreshCallHistoryBtn?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'refreshCallHistory' });
+});
+
+showFullHistoryBtn?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'showCallHistory' });
+});
+
+clearHistoryBtn?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'clearCallHistory' });
+});
+
 // ── Initial validation ─────────────────────────────────────────────────────────
-// Catches the case where the extension was reloaded with no model pre-selected.
 validateToggleBtn();

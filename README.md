@@ -39,7 +39,7 @@ npm run package
 1. Open the project in VS Code.
 2. Launch the extension (press `F5` to open the Extension Development Host).
 3. In the Extension Development Host, open the **Copilot OpenAI Proxy** sidebar panel.
-4. Select a model and click **Start Server**.
+4. Select a model and click **Start Server** (or enable autostart in settings).
 5. The server starts on `http://127.0.0.1:{port}/v1` (default port: 9090).
 
 Any application configured to use the OpenAI API can now connect:
@@ -102,6 +102,8 @@ $env:PROXY_PORT = 8080; node scripts/test-compat.mjs
 | C | `POST /v1/chat/completions` (streaming) | HTTP 200, SSE content type, `data:` chunks, `[DONE]` sentinel |
 | D | Various invalid requests | Non-2xx errors, server stability after bad requests |
 | E | Call history compatibility | API remains OpenAI-compatible after multiple sequential calls |
+| F | Message content normalization | String, `text` array, `input_text` array, `role:tool`, unsupported `image_url`/`audio`/malformed content returns 400 |
+| G | Zoo Code / Agent compatibility | `role:tool`, `assistant` with `tool_calls`, `tools`, `tool_choice:auto`/function, error shapes, 400 for unsupported content |
 
 ### Limitations
 
@@ -131,13 +133,33 @@ Open extension settings via:
 - Manual start/stop via the sidebar always works regardless of the `autoStart` setting.
 - If the server is already running, activation will not attempt a duplicate start.
 
-### Sidebar UI Settings
+### Sidebar UI
 
-Additional settings are managed through the sidebar UI and persisted in VS Code workspace state:
+The sidebar panel displays the following sections:
+
+| Section | Description |
+|---------|-------------|
+| **Server Status** | Shows running/stopped status, effective port, base URL, and autostart state |
+| **Server URL** | Displays the base URL (e.g., `http://127.0.0.1:9090/v1`) with a copy button. The port is configured through VS Code settings — see the hint in the sidebar. |
+| **Active Language Model** | Model selector dropdown with refresh button |
+| **Model Metadata** | Displays ID, name, vendor, family, version, max input tokens, and pricing info for the selected model |
+| **Raw Model Metadata** | Shows all enumerable properties from the VS Code `LanguageModelChat` object as formatted JSON. Useful for diagnosing what the VS Code Language Model API actually exposes at runtime. Includes a copy button and collapse/expand toggle. Sensitive-looking fields (tokens, secrets, passwords) are automatically redacted. Pricing is only shown if the API provides pricing metadata. |
+| **Verbose Logging** | Checkbox to enable verbose request/response logging |
+| **Start / Stop Server** | Toggle the proxy server on or off |
+| **Open Settings** | Opens the VS Code settings page for this extension |
+| **Quick Copy** | Copy buttons for base URL, models endpoint, and a cURL command |
+| **Current Session Metrics** | Live in-memory metrics since extension activation: total/successful/failed requests, endpoint breakdowns, streaming counts, token totals, average latency, last request/model/error. Includes per-model breakdown and a reset button. |
+| **Recent Calls** | Shows the 10 most recent call history entries with timestamp, endpoint, model, status, latency, streaming, and token usage. Includes buttons to show full history or clear history. |
+
+The port is **not** editable in the sidebar — change it through VS Code settings:
+
+- `Ctrl+Shift+P` → **GitHub Copilot OpenAI Proxy: Open Settings**
+- Or click **Open Settings** in the sidebar
+
+Additional sidebar settings persisted in VS Code workspace state:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Port | (from VS Code settings) | Local HTTP server port |
 | Model | (first available) | VS Code Language Model to route requests to |
 | Verbose Logging | `false` | Log full request/response bodies to output channel |
 
@@ -174,6 +196,7 @@ Each history entry includes:
 |---------|-------------|
 | `GitHub Copilot OpenAI Proxy: Show Call History` | Display recent call history in an output channel (newest first) |
 | `GitHub Copilot OpenAI Proxy: Clear Call History` | Delete all call history (requires confirmation) |
+| `GitHub Copilot OpenAI Proxy: Show Session Metrics` | Display current session metrics in an output channel |
 
 ### Retention
 
@@ -183,13 +206,125 @@ Entries older than the configured number of days (`callHistoryRetentionDays`, de
 
 Prompts and responses are never persisted. Only non-sensitive metadata is stored.
 
+## Session Metrics
+
+The extension tracks **in-memory** session metrics for the current VS Code session. These metrics are **not persisted** across VS Code restarts. They are independent from the persistent call history.
+
+### What Is Tracked
+
+- Session start timestamp
+- Total / successful / failed request counts
+- Endpoint breakdown (`/v1/models` count, `/v1/chat/completions` count)
+- Streaming vs non-streaming request counts
+- Total prompt, completion, and combined token counts (shown as "Unknown" if not reported)
+- Average latency across all requests
+- Last request timestamp, model, and error summary
+- Per-model breakdown: request count, success/failure, token usage, average latency
+
+### Sidebar Display
+
+The **Current Session Metrics** section in the sidebar shows a live view of all session metrics and a per-model breakdown table. It includes:
+
+- **Refresh Metrics** button: manually refresh the metrics display
+- **Reset Session Metrics** button: clears all in-memory session metrics (with confirmation). Does **not** affect persistent call history.
+
+### Command
+
+| Command | Description |
+|---------|-------------|
+| `GitHub Copilot OpenAI Proxy: Show Session Metrics` | Display current session metrics in an output channel as text |
+
+### Difference: Persistent Call History vs In-Memory Session Metrics
+
+| Aspect | Call History | Session Metrics |
+|--------|-------------|-----------------|
+| **Storage** | JSON file in global storage | In-memory only |
+| **Persistence** | Survives VS Code restarts | Lost on restart |
+| **Retention** | Configurable (default 10 days) | Current session only |
+| **Scope** | All recorded entries (up to 1000) | Aggregated counters + per-model breakdown |
+| **Clearable** | Yes (Clear History) | Yes (Reset Session Metrics) |
+| **Content** | Individual entry records | Aggregate totals |
+
+## Raw Model Metadata
+
+The sidebar includes a **Raw Model Metadata** section that displays all enumerable properties from the selected VS Code `LanguageModelChat` object as formatted JSON.
+
+### Purpose
+
+This view helps diagnose what metadata the VS Code Language Model API actually exposes at runtime. It may reveal additional fields beyond the standard `id`, `name`, `vendor`, `family`, `version`, and `maxInputTokens`.
+
+### Pricing Behavior
+
+Pricing information is derived from raw model metadata fields when present. The extension does **not** invent, fetch, or estimate pricing data. It checks for the following fields on the `LanguageModelChat` object:
+
+| Field | Example | Display |
+|-------|---------|---------|
+| `inputCost` | `25` | `25 AICs/1M tokens` |
+| `outputCost` | `200` | `200 AICs/1M tokens` |
+| `cacheCost` | `2` | `2 AICs/1M tokens` |
+| `priceCategory` | `"low"` | `low` |
+| `pricing` | `"In: 25 · Out: 200 AICs/1M tokens"` | Raw string |
+
+- Values are displayed as **AICs** (AI Credits) unless the metadata explicitly provides a USD unit.
+- No external pricing lookups or AIC-to-USD conversions are performed.
+- If no pricing fields exist in the raw metadata, the pricing row shows `Not provided by available model metadata`.
+- The Raw Model Metadata section continues to show all original fields regardless.
+
+### Safety
+
+- Sensitive-looking field names (containing `token`, `secret`, `password`, `authorization`, etc.) have their values automatically redacted as `[redacted]`.
+- The original model object is never mutated.
+- Functions, symbols, undefined values, and circular references are handled gracefully.
+
 ## Key Entry Points
 
 - **Extension activation**: [`src/extension.ts`](src/extension.ts:12) — `activate()` function
 - **HTTP server**: [`src/server.ts`](src/server.ts:7) — Express routes for OpenAI-compatible API
 - **LM Bridge** ([`src/lmBridge.ts`](src/lmBridge.ts:3)): Maps OpenAI API calls to VS Code Language Model API
 - **Call History** ([`src/callHistory.ts`](src/callHistory.ts:1)): Persistent metadata-only call history store
+- **Session Metrics** ([`src/sessionMetrics.ts`](src/sessionMetrics.ts:1)): In-memory session metrics store and safe serializer
 - **Sidebar UI**: [`src/webview/provider.ts`](src/webview/provider.ts:5) — Webview panel provider
+
+## OpenAI Agent Compatibility
+
+The proxy accepts standard OpenAI message formats used by agents such as Zoo Code, LangChain, and similar tools.
+
+### Supported Message Content Formats
+
+| Format | Example | Behavior |
+|--------|---------|----------|
+| Plain string | `"content": "hello"` | Pass-through |
+| Text array | `"content": [{"type":"text","text":"hello"}]` | Concatenated to plain text |
+| Input text array | `"content": [{"type":"input_text","text":"hello"}]` | Concatenated to plain text |
+| Empty/null | `"content": null` | Treated as empty string |
+| Mixed text parts | Multiple `text`/`input_text` parts | Concatenated |
+
+### Supported Agent Fields
+
+| Field | Behavior |
+|-------|----------|
+| `role: "tool"` | Converted to a user message with `[Tool Result for {id}]` prefix |
+| `tools` | Mapped to VS Code Language Model tool definitions |
+| `tool_choice` | Accepted without crashing; forwarded to VS Code LM API when supported |
+| `assistant` with `tool_calls` | Tool call information serialized as text context for the model |
+
+### Unsupported Content
+
+Content types such as `image_url`, `audio`, `file`, and other non-text parts return HTTP 400 with an OpenAI-compatible error shape:
+
+```json
+{
+  "error": {
+    "message": "Unsupported content part type \"image_url\"...",
+    "type": "invalid_request_error",
+    "code": null
+  }
+}
+```
+
+### Body Size Limit
+
+The JSON body limit is set to **10 MB** to accommodate agent requests with large conversation histories. Requests exceeding this limit return HTTP 413.
 
 ## Development Notes
 
@@ -198,6 +333,8 @@ Prompts and responses are never persisted. Only non-sensitive metadata is stored
 - The model selected in the sidebar is the model that actually processes requests, regardless of the model name in the incoming API request.
 - Tool calls (function calling) are supported and mapped to VS Code Language Model tools.
 - System messages from the OpenAI format are prepended to the first user message, as VS Code Language Model API does not support a separate system role.
+- Assistant messages with `content: null` and `tool_calls` are accepted without crashing.
+- Unsupported content types (image, audio, binary) return HTTP 400, not 500.
 
 ## Fork Notice
 

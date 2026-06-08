@@ -4,6 +4,7 @@ import { Server } from './server';
 import { SidebarProvider } from './webview/provider';
 import { getPort, getAutoStart } from './config';
 import { CallHistoryStore } from './callHistory';
+import { SessionMetricsStore } from './sessionMetrics';
 
 interface State {
   port: number;
@@ -16,19 +17,23 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(outputChannel);
 
   // Read the effective port from configuration (validated with fallback).
+  // Port is always config-driven; no sidebar editing of port.
   const effectivePort = getPort();
 
   const state: State = {
-    port: context.workspaceState.get<number>('port', effectivePort),
+    port: effectivePort,
     verboseLogging: context.workspaceState.get<boolean>('verboseLogging', false),
     selectedModel: context.workspaceState.get<string>('selectedModel', ''),
   };
 
   const lmBridge = new LmBridge(outputChannel);
   const callHistoryStore = new CallHistoryStore(context, outputChannel);
-  const server = new Server(lmBridge, outputChannel, callHistoryStore);
+  const sessionMetricsStore = new SessionMetricsStore();
+  const server = new Server(lmBridge, outputChannel, callHistoryStore, sessionMetricsStore);
 
-  const sidebarProvider = new SidebarProvider(context.extensionUri, state, server, lmBridge, outputChannel);
+  const sidebarProvider = new SidebarProvider(
+    context.extensionUri, state, server, lmBridge, outputChannel, callHistoryStore, sessionMetricsStore
+  );
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
@@ -100,17 +105,50 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Register the showSessionMetrics command.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('vscode-copilot-openai-proxy.showSessionMetrics', () => {
+      const snapshot = sessionMetricsStore.getSnapshot();
+      const channel = vscode.window.createOutputChannel('Copilot OpenAI Proxy — Session Metrics');
+      channel.appendLine('=== Current Session Metrics ===');
+      channel.appendLine('');
+      channel.appendLine(`Session started: ${snapshot.sessionStarted}`);
+      channel.appendLine(`Total requests: ${snapshot.totalRequests}`);
+      channel.appendLine(`Successful: ${snapshot.successfulRequests}`);
+      channel.appendLine(`Failed: ${snapshot.failedRequests}`);
+      channel.appendLine(`GET /v1/models: ${snapshot.modelsEndpointCount}`);
+      channel.appendLine(`POST /v1/chat/completions: ${snapshot.chatCompletionsEndpointCount}`);
+      channel.appendLine(`Streaming: ${snapshot.streamingRequestCount}`);
+      channel.appendLine(`Non-streaming: ${snapshot.nonStreamingRequestCount}`);
+      channel.appendLine(`Total prompt tokens: ${snapshot.totalPromptTokens}`);
+      channel.appendLine(`Total completion tokens: ${snapshot.totalCompletionTokens}`);
+      channel.appendLine(`Total tokens: ${snapshot.totalTokens}`);
+      channel.appendLine(`Average latency: ${snapshot.averageLatencyMs}ms`);
+      channel.appendLine(`Last request: ${snapshot.lastRequestTimestamp ?? 'None'}`);
+      channel.appendLine(`Last model: ${snapshot.lastUsedModel ?? 'None'}`);
+      if (snapshot.lastErrorSummary) {
+        channel.appendLine(`Last error: ${snapshot.lastErrorSummary}`);
+      }
+      if (snapshot.modelMetrics.length > 0) {
+        channel.appendLine('');
+        channel.appendLine('--- Per-Model Metrics ---');
+        for (const mm of snapshot.modelMetrics) {
+          const avgLat = mm.latencyCount > 0 ? Math.round(mm.latencySum / mm.latencyCount) : 0;
+          channel.appendLine(`  ${mm.modelId}: reqs=${mm.requestCount} ok=${mm.successCount} fail=${mm.failureCount} prompt_tokens=${mm.promptTokens} completion_tokens=${mm.completionTokens} total_tokens=${mm.totalTokens} avg_latency=${avgLat}ms`);
+        }
+      }
+      channel.show();
+    })
+  );
+
   // Ensure the HTTP server is stopped when the extension is deactivated
   // (e.g. VS Code closes) so the port is always released cleanly.
   context.subscriptions.push({
     dispose: () => { server.stop().catch(() => {}); },
   });
 
-  // Sync state changes back to workspaceState
+  // Sync state changes back to workspaceState (port is no longer persisted here)
   sidebarProvider.onStateChange((newState: Partial<State>) => {
-    if (newState.port !== undefined) {
-      context.workspaceState.update('port', newState.port);
-    }
     if (newState.verboseLogging !== undefined) {
       context.workspaceState.update('verboseLogging', newState.verboseLogging);
     }
