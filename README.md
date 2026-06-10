@@ -102,8 +102,9 @@ $env:PROXY_PORT = 8080; node scripts/test-compat.mjs
 | C | `POST /v1/chat/completions` (streaming) | HTTP 200, SSE content type, `data:` chunks, `[DONE]` sentinel |
 | D | Various invalid requests | Non-2xx errors, server stability after bad requests |
 | E | Call history compatibility | API remains OpenAI-compatible after multiple sequential calls |
-| F | Message content normalization | String, `text` array, `input_text` array, `role:tool`, unsupported `image_url`/`audio`/malformed content returns 400 |
-| G | Zoo Code / Agent compatibility | `role:tool`, `assistant` with `tool_calls`, `tools`, `tool_choice:auto`/function, error shapes, 400 for unsupported content |
+| F | Message content normalization | String, `text` array, `input_text` array, `role:tool`, unsupported `audio`/malformed content returns 400 |
+| G | Zoo Code / Agent compatibility | `role:tool`, `assistant` with `tool_calls`, `tools`, `tool_choice:auto`/function, error shapes, 400 for remote image URLs |
+| H | Image input compatibility | Data URL image accepted for capable models, remote URL returns 400, invalid data URL/MIME returns 400, no base64 data in errors |
 
 ### Limitations
 
@@ -298,6 +299,8 @@ The proxy accepts standard OpenAI message formats used by agents such as Zoo Cod
 | Input text array | `"content": [{"type":"input_text","text":"hello"}]` | Concatenated to plain text |
 | Empty/null | `"content": null` | Treated as empty string |
 | Mixed text parts | Multiple `text`/`input_text` parts | Concatenated |
+| Image (data URL) | `"content": [{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}]` | Accepted for models with `supportsImageToText` capability |
+| Image (remote URL) | `"content": [{"type":"image_url","image_url":{"url":"https://..."}}]` | Returns HTTP 400 (remote fetching not yet supported) |
 
 ### Supported Agent Fields
 
@@ -308,16 +311,64 @@ The proxy accepts standard OpenAI message formats used by agents such as Zoo Cod
 | `tool_choice` | Accepted without crashing; forwarded to VS Code LM API when supported |
 | `assistant` with `tool_calls` | Tool call information serialized as text context for the model |
 
-### Unsupported Content
+### Image Input Support
 
-Content types such as `image_url`, `audio`, `file`, and other non-text parts return HTTP 400 with an OpenAI-compatible error shape:
+Models whose raw metadata includes `capabilities.supportsImageToText: true` accept image content parts. The proxy maps OpenAI-style `image_url` content parts to VS Code `LanguageModelDataPart.image()`.
+
+#### Supported Image Content Part Shapes
+
+| Shape | Example |
+|-------|---------|
+| `image_url` | `{ "type": "image_url", "image_url": { "url": "data:image/png;base64,..." } }` |
+| `input_image` | `{ "type": "input_image", "image_url": { "url": "data:image/png;base64,..." } }` |
+| `image` | `{ "type": "image", "url": "data:image/png;base64,..." }` |
+
+#### Supported Image Sources
+
+| Source | Behavior |
+|--------|----------|
+| Data URL (`data:image/...;base64,...`) | Parsed and sent as binary image data to the VS Code LM API |
+| Remote URL (`https://...`) | **Not yet supported.** Returns HTTP 400 with a clear message requesting a data URL. |
+
+#### Supported Image MIME Types
+
+`image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/bmp`, `image/tiff`
+
+#### Unsupported Image Behavior
+
+If the selected model does **not** support image input, or the image data is invalid, the proxy returns HTTP 400 with an OpenAI-compatible error:
 
 ```json
 {
   "error": {
-    "message": "Unsupported content part type \"image_url\"...",
+    "message": "The selected model does not support image input...",
     "type": "invalid_request_error",
-    "code": null
+    "code": "unsupported_image_input"
+  }
+}
+```
+
+Error cases include:
+- Model without `supportsImageToText` receiving image parts
+- Remote HTTP/HTTPS image URLs (not yet supported)
+- Invalid data URLs (not valid base64)
+- Unsupported MIME types (e.g. `image/svg+xml`)
+- Missing image URL in content part
+
+#### Privacy Note
+
+Image data is **never** stored in call history. Only a boolean `imageInput` flag is recorded to indicate whether the request included image content. Full base64 payloads, image URLs, and image binary data are not persisted or logged.
+
+### Unsupported Content
+
+Content types such as `audio`, `file`, and other non-text/non-image parts return HTTP 400 with an OpenAI-compatible error shape. For models without image support, `image_url` parts also return 400:
+
+```json
+{
+  "error": {
+    "message": "Unsupported content part type \"audio\"...",
+    "type": "invalid_request_error",
+    "code": "unsupported_image_input"
   }
 }
 ```
@@ -334,7 +385,10 @@ The JSON body limit is set to **10 MB** to accommodate agent requests with large
 - Tool calls (function calling) are supported and mapped to VS Code Language Model tools.
 - System messages from the OpenAI format are prepended to the first user message, as VS Code Language Model API does not support a separate system role.
 - Assistant messages with `content: null` and `tool_calls` are accepted without crashing.
-- Unsupported content types (image, audio, binary) return HTTP 400, not 500.
+- Image input (`image_url`, `input_image`, `image` content parts) is supported for models with `supportsImageToText` capability, using data URLs only.
+- Remote image URLs (http/https) are not yet supported and return HTTP 400.
+- Unsupported content types (audio, file, binary) return HTTP 400, not 500.
+- Image data is never stored in call history; only a metadata flag is recorded.
 
 ## Fork Notice
 

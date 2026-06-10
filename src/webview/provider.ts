@@ -21,6 +21,11 @@ interface ModelMetadata {
     priceCategory?: string;
     raw?: string;
   };
+  /** Model capabilities extracted from raw metadata, if available. */
+  capabilities?: {
+    supportsImageToText?: boolean;
+    supportsToolCalling?: boolean;
+  };
 }
 
 export class SidebarProvider implements vscode.WebviewViewProvider {
@@ -99,7 +104,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           this._refreshModels(true);
           break;
         case 'selectModel':
-          this._state.selectedModel = data.payload.selectedModel || '';
+          this._state.selectedModel = data.payload.selectedModel || 'auto';
           this._onStateChange.fire({ selectedModel: this._state.selectedModel });
           this._postModelMetadata();
           this._postRawModelMetadata();
@@ -144,12 +149,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   /** Sync all state to the webview: status, models, metadata, call history, metrics. */
   private async _syncAllState() {
     this._postStatusUpdate();
-    if (this._cachedModelIds.length > 0) {
-      this._view?.webview.postMessage({
-        type: 'models',
-        payload: { models: this._cachedModelIds, selectedModel: this._state.selectedModel },
-      });
-    }
+    // Always send models list (includes 'auto'). If no real models discovered
+    // yet, send just ['auto'] so the dropdown always has a valid default.
+    const modelsToSend = this._cachedModelIds.length > 0
+      ? this._cachedModelIds
+      : ['auto'];
+    this._view?.webview.postMessage({
+      type: 'models',
+      payload: { models: modelsToSend, selectedModel: this._state.selectedModel },
+    });
     this._postModelMetadata();
     this._postRawModelMetadata();
     this._postCallHistory();
@@ -179,8 +187,21 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         const duration = Date.now() - startTime;
 
         this._cachedModels = models;
-        this._cachedModelIds = models.map(m => m.id);
-        this._outputChannel.appendLine(`Found ${this._cachedModelIds.length} models in ${duration}ms.`);
+        this._cachedModelIds = ['auto', ...models.map(m => m.id)];
+        this._outputChannel.appendLine(`Found ${models.length} models in ${duration}ms.`);
+
+        // If the stored selected model is no longer available, fall back to 'auto'.
+        if (
+          this._state.selectedModel &&
+          this._state.selectedModel !== 'auto' &&
+          !models.some(m => m.id === this._state.selectedModel)
+        ) {
+          this._outputChannel.appendLine(
+            `Selected model "${this._state.selectedModel}" no longer available — falling back to auto.`
+          );
+          this._state.selectedModel = 'auto';
+          this._onStateChange.fire({ selectedModel: 'auto' });
+        }
 
         this._view?.webview.postMessage({
             type: 'models',
@@ -238,6 +259,21 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       metadata.pricing = pricing;
     }
 
+    // Extract capability flags from raw model metadata.
+    const caps = raw?.capabilities;
+    if (caps && typeof caps === 'object') {
+      const capabilities: ModelMetadata['capabilities'] = {};
+      if (typeof caps.supportsImageToText === 'boolean') {
+        capabilities.supportsImageToText = caps.supportsImageToText;
+      }
+      if (typeof caps.supportsToolCalling === 'boolean') {
+        capabilities.supportsToolCalling = caps.supportsToolCalling;
+      }
+      if (capabilities.supportsImageToText !== undefined || capabilities.supportsToolCalling !== undefined) {
+        metadata.capabilities = capabilities;
+      }
+    }
+
     return metadata;
   }
 
@@ -273,7 +309,30 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   /** Post model metadata for the currently selected model. */
   private _postModelMetadata() {
-    if (!this._state.selectedModel || this._cachedModels.length === 0) {
+    if (!this._state.selectedModel) {
+      this._view?.webview.postMessage({ type: 'modelMetadata', payload: null });
+      return;
+    }
+
+    // 'auto' selection — send synthetic metadata so the sidebar never shows
+    // a completely empty metadata section.
+    if (this._state.selectedModel === 'auto') {
+      this._view?.webview.postMessage({
+        type: 'modelMetadata',
+        payload: {
+          id: 'auto',
+          name: 'Auto',
+          vendor: 'VS Code / GitHub Copilot',
+          family: 'automatic',
+          version: '',
+          maxInputTokens: 0,
+          isAuto: true,
+        },
+      });
+      return;
+    }
+
+    if (this._cachedModels.length === 0) {
       this._view?.webview.postMessage({ type: 'modelMetadata', payload: null });
       return;
     }
@@ -288,7 +347,26 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   /** Post raw model metadata for the currently selected model. */
   private _postRawModelMetadata() {
-    if (!this._state.selectedModel || this._cachedModels.length === 0) {
+    if (!this._state.selectedModel) {
+      this._view?.webview.postMessage({ type: 'rawModelMetadata', payload: null });
+      return;
+    }
+
+    // 'auto' selection — send a synthetic raw metadata note.
+    if (this._state.selectedModel === 'auto') {
+      this._view?.webview.postMessage({
+        type: 'rawModelMetadata',
+        payload: {
+          id: 'auto',
+          name: 'Auto',
+          description: 'Automatically selected by VS Code / GitHub Copilot.',
+          note: 'Uses automatic model selection where supported. The first available model is used at request time.',
+        },
+      });
+      return;
+    }
+
+    if (this._cachedModels.length === 0) {
       this._view?.webview.postMessage({ type: 'rawModelMetadata', payload: null });
       return;
     }
@@ -380,9 +458,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     const disabledAttr = isRunning ? 'disabled="disabled"' : '';
     const autoStartLabel = autoStart ? 'Enabled' : 'Disabled';
 
-    const modelOptions = this._cachedModelIds.map(id =>
-      `<vscode-option value="${this._esc(id)}" ${id === this._state.selectedModel ? 'selected' : ''}>${this._esc(id)}</vscode-option>`
-    ).join('') || '<vscode-option value="">Select a model...</vscode-option>';
+    // Always include 'auto' as the first option. If real models have been
+    // discovered they follow; otherwise only 'auto' is shown.
+    const modelIds = this._cachedModelIds.length > 0
+      ? this._cachedModelIds
+      : ['auto'];
+    const modelOptions = modelIds.map(id => {
+      const label = id === 'auto' ? 'Auto' : this._esc(id);
+      return `<vscode-option value="${this._esc(id)}" ${id === this._state.selectedModel ? 'selected' : ''}>${label}</vscode-option>`;
+    }).join('');
 
     return `
       <!DOCTYPE html>
@@ -465,6 +549,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             <div id="pricingOutputCost" class="meta-row" style="display:none;"><span class="meta-label">Output cost</span><span id="metaOutputCost" class="meta-value"></span></div>
             <div id="pricingCategory" class="meta-row" style="display:none;"><span class="meta-label">Price category</span><span id="metaPriceCategory" class="meta-value"></span></div>
             <div id="pricingRaw" class="meta-row" style="display:none;"><span class="meta-label">Pricing (raw)</span><span id="metaPricingRaw" class="meta-value"></span></div>
+            <div id="capImageInput" class="meta-row" style="display:none;"><span class="meta-label">Image input</span><span id="metaCapImageInput" class="meta-value"></span></div>
+            <div id="capToolCalling" class="meta-row" style="display:none;"><span class="meta-label">Tool calling</span><span id="metaCapToolCalling" class="meta-value"></span></div>
           </div>
         </div>
 

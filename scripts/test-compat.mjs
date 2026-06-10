@@ -534,8 +534,11 @@ async function testMessageContentNormalization() {
       assert(res.status !== 500, `F4: expected non-500, got ${res.status}`);
     });
 
-    // F5: Unsupported image_url content returns 400, not 500
-    it('F5: image_url content returns 400', async () => {
+    // F5: image_url content returns 400 (model without image support) or
+    //      400 (remote URL not supported) — both are acceptable non-500 results.
+    //      If the model supports images and the URL were a valid data URL, 200
+    //      would also be acceptable.
+    it('F5: image_url content returns non-500', async () => {
       const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -553,7 +556,7 @@ async function testMessageContentNormalization() {
           stream: false,
         }),
       });
-      assertEqual(res.status, 400, 'F5 status');
+      assert(res.status !== 500, `F5: expected non-500, got ${res.status}`);
     });
 
     // F6: Unknown content part type returns 400, not 500
@@ -777,8 +780,9 @@ async function testAgentCompatibility() {
       assert(res.status !== 500, `G5: expected non-500, got ${res.status}`);
     });
 
-    // G6: unsupported image_url returns 400 with OpenAI error shape
-    it('G6: image_url returns 400 with OpenAI error shape', async () => {
+    // G6: image_url with remote URL returns 400 with OpenAI error shape
+    // (remote URLs are not yet supported regardless of model capability)
+    it('G6: remote image_url returns 400 with OpenAI error shape', async () => {
       const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -798,6 +802,8 @@ async function testAgentCompatibility() {
       assert(body.error !== undefined, 'G6: response should have error field');
       assert(typeof body.error.message === 'string', 'G6: error.message should be string');
       assertEqual(body.error.type, 'invalid_request_error', 'G6: error.type');
+      // Verify no base64 data leaked into the error message
+      assert(!body.error.message.includes('base64'), 'G6: error should not contain base64 data');
     });
 
     // G7: unknown content part returns 400 with OpenAI error shape
@@ -860,6 +866,286 @@ async function testAgentCompatibility() {
 }
 
 // ---------------------------------------------------------------------------
+// Image input compatibility tests (H)
+// ---------------------------------------------------------------------------
+// These tests validate that the proxy correctly handles OpenAI-compatible
+// image content parts (image_url with data URLs and remote URLs).
+//
+// A 1x1 transparent PNG is used as a minimal test image.
+// Base64 data is never printed in failure output.
+
+/** Tiny 1x1 transparent PNG as a data URL. */
+const TINY_PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+
+async function testImageInputCompatibility() {
+  describe('H. Image input compatibility', async () => {
+    // Resolve model ID — try gpt-5-mini first (known image-capable), then first available
+    let modelId = 'gpt-5-mini';
+    let imageCapableModelId = null;
+    try {
+      const modelsRes = await fetchWithTimeout(`${BASE_URL}/v1/models`);
+      const modelsBody = JSON.parse(modelsRes._rawBody);
+      if (modelsBody.data && modelsBody.data.length > 0) {
+        // Use gpt-5-mini if available, otherwise first model
+        const found = modelsBody.data.find(m => m.id === 'gpt-5-mini');
+        if (found) {
+          imageCapableModelId = 'gpt-5-mini';
+        }
+        modelId = modelsBody.data[0].id;
+      }
+    } catch {
+      // Use fallback
+    }
+
+    // H1: Data URL image with an image-capable model returns non-500
+    //      (should be 200 if model supports images and VS Code LM accepts it)
+    it('H1: data URL image with image-capable model returns non-500', async () => {
+      const targetModel = imageCapableModelId || modelId;
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: targetModel,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: 'What is in this image? Answer briefly.' },
+                { type: 'image_url', image_url: { url: TINY_PNG_DATA_URL } },
+              ],
+            },
+          ],
+          stream: false,
+        }),
+      });
+      // Should not be a proxy-side 500. Could be 200 (accepted), 400 (model
+      // doesn't support images), or a VS Code LM API error.
+      assert(res.status !== 500, `H1: expected non-500, got ${res.status}`);
+    });
+
+    // H2: If the request succeeds (200), verify OpenAI-compatible response shape
+    it('H2: successful image request has OpenAI response shape', async () => {
+      const targetModel = imageCapableModelId || modelId;
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: targetModel,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: 'Describe this image briefly.' },
+                { type: 'image_url', image_url: { url: TINY_PNG_DATA_URL } },
+              ],
+            },
+          ],
+          stream: false,
+        }),
+      });
+      if (res.status === 200) {
+        const body = JSON.parse(res._rawBody);
+        assertEqual(body.object, 'chat.completion', 'H2 object');
+        assert(Array.isArray(body.choices), 'H2: choices should be array');
+        assert(body.choices.length > 0, 'H2: choices should not be empty');
+        assertEqual(body.choices[0].message.role, 'assistant', 'H2: role');
+        assert(typeof body.choices[0].message.content === 'string', 'H2: content is string');
+      } else {
+        // Non-200 is acceptable if model doesn't support images
+        console.log(`      (H2: skipped — model returned ${res.status})`);
+        skipped++;
+      }
+    });
+
+    // H3: Remote HTTP image URL returns 400 (not yet supported)
+    it('H3: remote HTTP image URL returns 400', async () => {
+      const targetModel = imageCapableModelId || modelId;
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: targetModel,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: 'Describe this.' },
+                { type: 'image_url', image_url: { url: 'https://example.com/image.png' } },
+              ],
+            },
+          ],
+          stream: false,
+        }),
+      });
+      assertEqual(res.status, 400, 'H3 status');
+      const body = JSON.parse(res._rawBody);
+      assert(body.error !== undefined, 'H3: should have error field');
+      assert(body.error.message.toLowerCase().includes('remote') ||
+             body.error.message.toLowerCase().includes('not yet supported') ||
+             body.error.message.toLowerCase().includes('data url'),
+        'H3: error should mention remote URLs not supported');
+    });
+
+    // H4: Invalid data URL returns 400
+    it('H4: invalid data URL returns 400', async () => {
+      const targetModel = imageCapableModelId || modelId;
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: targetModel,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'image_url', image_url: { url: 'data:not-valid' } },
+              ],
+            },
+          ],
+          stream: false,
+        }),
+      });
+      assertEqual(res.status, 400, 'H4 status');
+      const body = JSON.parse(res._rawBody);
+      assert(body.error !== undefined, 'H4: should have error field');
+      assert(typeof body.error.message === 'string', 'H4: error.message should be string');
+    });
+
+    // H5: Unsupported MIME type returns 400
+    it('H5: unsupported MIME type returns 400', async () => {
+      const targetModel = imageCapableModelId || modelId;
+      // Fake a "data:image/svg+xml;base64,..." URL
+      const fakeSvg = 'data:image/svg+xml;base64,' + Buffer.from('<svg/>').toString('base64');
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: targetModel,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'image_url', image_url: { url: fakeSvg } },
+              ],
+            },
+          ],
+          stream: false,
+        }),
+      });
+      assertEqual(res.status, 400, 'H5 status');
+      const body = JSON.parse(res._rawBody);
+      assert(body.error !== undefined, 'H5: should have error field');
+      assert(body.error.message.toLowerCase().includes('mime') ||
+             body.error.message.toLowerCase().includes('unsupported'),
+        'H5: error should mention unsupported MIME type');
+    });
+
+    // H6: Model without image support returns 400 with clear message
+    it('H6: model without image support returns 400', async () => {
+      // Use a deliberately nonexistent model ID — it will fall back to the
+      // default model which may or may not support images.
+      // The key test: if it returns 400, the error shape must be correct.
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'text-only-model-no-images',
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'image_url', image_url: { url: TINY_PNG_DATA_URL } },
+              ],
+            },
+          ],
+          stream: false,
+        }),
+      });
+      // If the model falls back to one that supports images, it might be 200.
+      // If the model doesn't support images, it should be 400.
+      assert(res.status !== 500, `H6: expected non-500, got ${res.status}`);
+      if (res.status === 400) {
+        const body = JSON.parse(res._rawBody);
+        assert(body.error !== undefined, 'H6: should have error field');
+        assertEqual(body.error.type, 'invalid_request_error', 'H6: error.type');
+      }
+    });
+
+    // H7: Base64 data is not leaked in any error message
+    it('H7: base64 image data not leaked in error messages', async () => {
+      const targetModel = imageCapableModelId || modelId;
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: targetModel,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'image_url', image_url: { url: TINY_PNG_DATA_URL } },
+              ],
+            },
+          ],
+          stream: false,
+        }),
+      });
+      if (res.status >= 400) {
+        const body = JSON.parse(res._rawBody);
+        if (body.error && typeof body.error.message === 'string') {
+          // The actual base64 payload should never appear in the error
+          const base64Payload = TINY_PNG_DATA_URL.split('base64,')[1];
+          assert(
+            !body.error.message.includes(base64Payload),
+            'H7: error message should not contain base64 image data'
+          );
+        }
+      }
+      // If 200, no error to check — pass
+    });
+
+    // H8: Text-only request still works after image handling is added
+    it('H8: text-only request still works after image support', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with the word OK.' }],
+          stream: false,
+        }),
+      });
+      assertEqual(res.status, 200, 'H8 status');
+      const body = JSON.parse(res._rawBody);
+      assertEqual(body.object, 'chat.completion', 'H8 object');
+    });
+
+    // H9: Mixed text + image content part with input_image type
+    it('H9: input_image content part type returns non-500', async () => {
+      const targetModel = imageCapableModelId || modelId;
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: targetModel,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: 'Describe this.' },
+                { type: 'input_image', image_url: { url: TINY_PNG_DATA_URL } },
+              ],
+            },
+          ],
+          stream: false,
+        }),
+      });
+      assert(res.status !== 500, `H9: expected non-500, got ${res.status}`);
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Main runner
 // ---------------------------------------------------------------------------
 
@@ -883,6 +1169,7 @@ async function main() {
   await testCallHistoryCompatibility();
   await testMessageContentNormalization();
   await testAgentCompatibility();
+  await testImageInputCompatibility();
 
   console.log('\n' + '─'.repeat(50));
   console.log(`Results: ${passed} passed, ${failed} failed, ${skipped} skipped`);

@@ -47,6 +47,12 @@ const metaOutputCost         = document.getElementById('metaOutputCost');
 const metaPriceCategory      = document.getElementById('metaPriceCategory');
 const metaPricingRaw         = document.getElementById('metaPricingRaw');
 
+// Capability elements
+const capImageInput          = document.getElementById('capImageInput');
+const metaCapImageInput      = document.getElementById('metaCapImageInput');
+const capToolCalling         = document.getElementById('capToolCalling');
+const metaCapToolCalling     = document.getElementById('metaCapToolCalling');
+
 // Raw metadata
 const rawMetadataSection     = document.getElementById('rawMetadataSection');
 const rawMetadataNoModel     = document.getElementById('rawMetadataNoModel');
@@ -87,7 +93,7 @@ const clearHistoryBtn        = document.getElementById('clearHistory');
 
 // ── State — initialized from data attributes stamped by the extension host  ───
 let isRunning    = document.body.dataset.isRunning === 'true';
-let currentModel = document.body.dataset.selectedModel  || '';
+let currentModel = document.body.dataset.selectedModel  || 'auto';
 let baseUrl      = document.body.dataset.baseUrl  || '';
 let modelsUrl    = document.body.dataset.modelsUrl || '';
 let curlCmd      = document.body.dataset.curlCmd   || '';
@@ -178,13 +184,13 @@ function updateStatus(payload) {
 function updateModels({ models, selectedModel }) {
     if (!modelSelect) { return; }
 
-    currentModel = selectedModel || '';
+    currentModel = selectedModel || 'auto';
 
-    modelSelect.innerHTML = '<vscode-option value="">Select a model...</vscode-option>';
+    modelSelect.innerHTML = '';
     models.forEach(modelId => {
         const option = document.createElement('vscode-option');
         option.value = modelId;
-        option.textContent = modelId;
+        option.textContent = modelId === 'auto' ? 'Auto' : modelId;
         if (modelId === currentModel) {
             option.setAttribute('selected', 'selected');
         }
@@ -193,7 +199,7 @@ function updateModels({ models, selectedModel }) {
 
     // Update active model in metrics
     if (mActiveModel) {
-        mActiveModel.textContent = currentModel || '\u2014';
+        mActiveModel.textContent = currentModel === 'auto' ? 'Auto' : (currentModel || '\u2014');
     }
 
     validateToggleBtn();
@@ -215,14 +221,20 @@ function updateModelMetadata(metadata) {
     if (metaFamily) { metaFamily.textContent = metadata.family || '\u2014'; }
     if (metaVersion) { metaVersion.textContent = metadata.version || '\u2014'; }
     if (metaMaxTokens) {
-        metaMaxTokens.textContent = metadata.maxInputTokens != null
-            ? metadata.maxInputTokens.toLocaleString()
-            : '\u2014';
+        // For 'auto', show a descriptive note instead of a misleading number.
+        if (metadata.isAuto) {
+            metaMaxTokens.textContent = 'Uses automatic model selection where supported.';
+        } else {
+            metaMaxTokens.textContent = metadata.maxInputTokens != null
+                ? metadata.maxInputTokens.toLocaleString()
+                : '\u2014';
+        }
     }
 
     // Pricing display — only show rows when raw model metadata provides pricing fields.
+    // For 'auto' selection, hide all pricing to avoid misleading information.
     const pricing = metadata.pricing;
-    const hasPricing = pricing && (
+    const hasPricing = !metadata.isAuto && pricing && (
         typeof pricing.inputCost === 'number' ||
         typeof pricing.outputCost === 'number' ||
         typeof pricing.cacheCost === 'number' ||
@@ -230,7 +242,7 @@ function updateModelMetadata(metadata) {
         typeof pricing.raw === 'string'
     );
 
-    if (pricingNoData) { pricingNoData.style.display = hasPricing ? 'none' : ''; }
+    if (pricingNoData) { pricingNoData.style.display = (hasPricing || metadata.isAuto) ? 'none' : ''; }
     if (pricingInputCost) {
         if (hasPricing && typeof pricing.inputCost === 'number') {
             pricingInputCost.style.display = '';
@@ -269,6 +281,35 @@ function updateModelMetadata(metadata) {
             if (metaPricingRaw) { metaPricingRaw.textContent = pricing.raw; }
         } else {
             pricingRaw.style.display = 'none';
+        }
+    }
+
+    // Capability display — hide for 'auto' since the actual model is unknown.
+    const caps = metadata.capabilities;
+    if (capImageInput && metaCapImageInput) {
+        if (metadata.isAuto) {
+            capImageInput.style.display = 'none';
+        } else if (caps && typeof caps.supportsImageToText === 'boolean') {
+            capImageInput.style.display = '';
+            metaCapImageInput.textContent = caps.supportsImageToText ? 'Supported' : 'Not supported';
+            metaCapImageInput.style.color = caps.supportsImageToText
+                ? 'var(--vscode-charts-green)'
+                : 'var(--vscode-charts-red)';
+        } else {
+            capImageInput.style.display = 'none';
+        }
+    }
+    if (capToolCalling && metaCapToolCalling) {
+        if (metadata.isAuto) {
+            capToolCalling.style.display = 'none';
+        } else if (caps && typeof caps.supportsToolCalling === 'boolean') {
+            capToolCalling.style.display = '';
+            metaCapToolCalling.textContent = caps.supportsToolCalling ? 'Supported' : 'Not supported';
+            metaCapToolCalling.style.color = caps.supportsToolCalling
+                ? 'var(--vscode-charts-green)'
+                : 'var(--vscode-charts-red)';
+        } else {
+            capToolCalling.style.display = 'none';
         }
     }
 }
@@ -407,6 +448,7 @@ function updateCallHistory(data) {
             ? (entry.promptTokens ?? '-') + '/' + (entry.completionTokens ?? '-')
             : '';
         const errorPart = entry.error ? '<div class="call-error">' + escapeHtml(truncate(entry.error, 60)) + '</div>' : '';
+        const imagePart = entry.imageInput ? ' \u00b7 <span>image: yes</span>' : '';
 
         return '<div class="call-entry">' +
             '<div class="call-header">' +
@@ -419,6 +461,7 @@ function updateCallHistory(data) {
                 ' \u00b7 <span>model: ' + escapeHtml(model) + '</span>' +
                 ' \u00b7 <span>stream: ' + escapeHtml(streaming) + '</span>' +
                 (tokens ? ' \u00b7 <span>tokens: ' + escapeHtml(tokens) + '</span>' : '') +
+                imagePart +
             '</div>' +
             errorPart +
         '</div>';

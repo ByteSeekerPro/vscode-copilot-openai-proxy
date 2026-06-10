@@ -23,7 +23,7 @@ export function activate(context: vscode.ExtensionContext) {
   const state: State = {
     port: effectivePort,
     verboseLogging: context.workspaceState.get<boolean>('verboseLogging', false),
-    selectedModel: context.workspaceState.get<string>('selectedModel', ''),
+    selectedModel: context.workspaceState.get<string>('selectedModel', 'auto'),
   };
 
   const lmBridge = new LmBridge(outputChannel);

@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import * as net from 'net';
 import * as vscode from 'vscode';
-import { LmBridge, validateMessages, ContentValidationError } from './lmBridge';
+import { LmBridge, validateMessages, ContentValidationError, hasImageContent } from './lmBridge';
 import { CallHistoryStore, CallHistoryEntry } from './callHistory';
 import { SessionMetricsStore } from './sessionMetrics';
 
@@ -78,13 +78,28 @@ export class Server {
         this.outputChannel.appendLine(`[Request Body] ${JSON.stringify(req.body, null, 2)}`);
       }
 
+      // Detect image content presence for metadata tracking
+      const requestHasImages = Array.isArray(messages) && hasImageContent(messages);
+
+      // Look up model capabilities to determine if image input is supported.
+      // This is needed before validation so we can accept image parts for
+      // image-capable models instead of rejecting them outright.
+      let supportsImage = false;
+      try {
+        const caps = await this.lmBridge.getModelCapabilities(model);
+        supportsImage = caps.supportsImageToText;
+      } catch {
+        // If capability lookup fails, treat as no image support
+        supportsImage = false;
+      }
+
       // Validate message content shapes before passing to VS Code LM API.
-      // This returns a clean 400 for unsupported content (e.g. image_url)
-      // instead of letting VS Code throw a 500.
-      const validationError = validateMessages(messages);
+      // When supportsImage is true, image content parts are accepted and
+      // validated (data URLs only). When false, image parts cause a 400.
+      const validationError = validateMessages(messages, { supportsImage });
       if (validationError) {
         res.status(validationError.status).json({
-          error: { message: validationError.error, type: 'invalid_request_error', code: null },
+          error: { message: validationError.error, type: 'invalid_request_error', code: 'unsupported_image_input' },
         });
         this.recordEntry({
           endpoint: '/v1/chat/completions',
@@ -94,6 +109,7 @@ export class Server {
           success: false,
           streaming: typeof stream === 'boolean' ? stream : null,
           error: validationError.error,
+          imageInput: requestHasImages || undefined,
         });
         return;
       }
@@ -173,6 +189,7 @@ export class Server {
             promptTokens: finalUsage?.prompt_tokens ?? null,
             completionTokens: finalUsage?.completion_tokens ?? null,
             totalTokens: finalUsage?.total_tokens ?? null,
+            imageInput: requestHasImages || undefined,
           });
         } else {
           // Non-streaming
@@ -225,6 +242,7 @@ export class Server {
             promptTokens: usage.prompt_tokens ?? null,
             completionTokens: usage.completion_tokens ?? null,
             totalTokens: usage.total_tokens ?? null,
+            imageInput: requestHasImages || undefined,
           });
         }
       } catch (error: any) {
@@ -247,6 +265,7 @@ export class Server {
           success: false,
           streaming: typeof stream === 'boolean' ? stream : null,
           error: error.message,
+          imageInput: requestHasImages || undefined,
         });
       }
     });
@@ -264,6 +283,7 @@ export class Server {
     completionTokens?: number | null;
     totalTokens?: number | null;
     error?: string | null;
+    imageInput?: boolean;
   }): void {
     const timestamp = new Date().toISOString();
     const entry: CallHistoryEntry = {
@@ -280,6 +300,7 @@ export class Server {
       completionTokens: fields.completionTokens ?? null,
       totalTokens: fields.totalTokens ?? null,
       error: fields.error ?? null,
+      imageInput: fields.imageInput ?? null,
     };
     this.callHistoryStore.append(entry).catch((err) => {
       this.outputChannel.appendLine(`[CallHistory] Write failed: ${err.message ?? err}`);

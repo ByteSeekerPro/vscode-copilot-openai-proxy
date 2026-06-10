@@ -36,6 +36,8 @@ export interface CallHistoryEntry {
   totalTokens: number | null;
   /** Short error message if the request failed, otherwise null. */
   error: string | null;
+  /** Whether the request included image content parts, if detected. */
+  imageInput?: boolean | null;
 }
 
 /** Filename for persisted call history in global storage. */
