@@ -48,9 +48,6 @@ No focused test commands discovered. The test infrastructure uses `@vscode/test-
 |---|---|---|
 | `npm run test:compat` | OpenAI compatibility test suite (`scripts/test-compat.mjs`) | Server must be running on configured port |
 | `set PROXY_PORT=8080 && node scripts/test-compat.mjs` | Compatibility tests on custom port | Server must be running on that port |
-| `bash scripts/test-service.sh` | curl-based API test (tests `/v1/models`) | Server must be running |
-| `cd scripts && uv run test-langchain.py` | LangChain integration test (auto-detects model) | Server must be running, `uv` installed |
-| `cd scripts && uv run test-langchain.py --stream` | Also test streaming | Same as above |
 
 ## Lint / Format
 

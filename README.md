@@ -37,7 +37,7 @@ A VS Code extension that exposes GitHub Copilot / VS Code Language Model API mod
 ### From VSIX
 
 ```cmd
-code --install-extension vscode-copilot-openai-proxy-1.0.0.vsix
+code --install-extension vscode-copilot-openai-proxy-1.0.1.vsix
 ```
 
 ### From Development Checkout

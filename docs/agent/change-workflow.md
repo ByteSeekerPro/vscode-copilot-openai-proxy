@@ -14,7 +14,7 @@
 3. Run `npm run compile && npm run test` to confirm current state.
 4. Implement the fix.
 5. Run `npm run compile && npm run test` again.
-6. If the bug involves the HTTP API, test manually with `bash scripts/test-service.sh` (requires running server).
+6. If the bug involves the HTTP API, test manually with `npm run test:compat` (requires running server).
 
 ## New Features
 

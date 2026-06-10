@@ -2,7 +2,7 @@
   "name": "vscode-copilot-openai-proxy",
   "displayName": "GitHub Copilot OpenAI Proxy",
   "description": "Expose GitHub Copilot / VS Code Language Model API models through a local OpenAI-compatible HTTP API.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "license": "Apache-2.0",
   "publisher": "ByteSeekerPro",
   "engines": {

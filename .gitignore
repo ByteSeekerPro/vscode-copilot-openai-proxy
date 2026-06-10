@@ -6,3 +6,4 @@ out/
 *.vsix
 .DS_Store/
 .DS_Store
+scripts/uv.lock
