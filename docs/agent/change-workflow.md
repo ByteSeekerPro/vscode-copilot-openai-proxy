@@ -48,7 +48,7 @@
 | Change Type | Required Verification |
 |---|---|
 | Any `src/` change | `npm run compile && npm run test` |
-| HTTP API change | Manual test with running server |
+| HTTP API change | Manual test with running server; `npm run test:compat` |
 | Webview UI change | Manual test in Extension Development Host |
 | `package.json` change | `npm run compile` to verify no breakage |
 | Docs only | No verification needed |

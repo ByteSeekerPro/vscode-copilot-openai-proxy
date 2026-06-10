@@ -11,11 +11,11 @@
 
 | Command | Description | Verified |
 |---|---|---|
-| `npm install` | Install dependencies | Needs verification |
-| `npm run compile` | Compile TypeScript to `out/` via `tsc` | Needs verification |
-| `npm run bundle` | Bundle with tsup (minified CJS, external vscode) to `out/` | Needs verification |
-| `npm run watch` | Watch mode with tsup | Needs verification |
-| `npm run package` | Package as `.vsix` file via `vsce` | Needs verification |
+| `npm install` | Install dependencies | Verified |
+| `npm run compile` | Compile TypeScript to `out/` via `tsc` | Verified |
+| `npm run bundle` | Bundle with tsup (minified CJS, external vscode) to `out/` | Verified |
+| `npm run watch` | Watch mode with tsup | Verified |
+| `npm run package` / `npx @vscode/vsce package` | Package as `.vsix` file via `vsce` | Verified |
 
 ## Run / Start
 
@@ -33,11 +33,10 @@ There is no standalone CLI run mode — the extension requires the VS Code host.
 
 | Command | Description | Verified |
 |---|---|---|
-| `npm run pretest` | Compile + lint | Needs verification |
-| `npm run test` | Run Mocha tests via `@vscode/test-electron` | Needs verification |
-| `npm run lint` | ESLint on `src/` | Needs verification |
-
-The test runner entry point is `out/test/runTest.js` (referenced in [`package.json`](package.json:63)). Inferred, not verified — no test files were found in `src/`.
+| `npm run pretest` | Compile + lint | Verified |
+| `npm run test` | Bundle (same as `npm run bundle`) | Verified |
+| `npm run lint` | ESLint on `src/` | Verified |
+| `npm run test:compat` | Run OpenAI compatibility tests against running server | Verified (requires running server) |
 
 ## Focused Test Commands
 
@@ -47,6 +46,8 @@ No focused test commands discovered. The test infrastructure uses `@vscode/test-
 
 | Command | Description | Prerequisites |
 |---|---|---|
+| `npm run test:compat` | OpenAI compatibility test suite (`scripts/test-compat.mjs`) | Server must be running on configured port |
+| `set PROXY_PORT=8080 && node scripts/test-compat.mjs` | Compatibility tests on custom port | Server must be running on that port |
 | `bash scripts/test-service.sh` | curl-based API test (tests `/v1/models`) | Server must be running |
 | `cd scripts && uv run test-langchain.py` | LangChain integration test (auto-detects model) | Server must be running, `uv` installed |
 | `cd scripts && uv run test-langchain.py --stream` | Also test streaming | Same as above |
@@ -65,8 +66,9 @@ These commands are safe to run without side effects:
 
 - `npm run compile` — read-only compilation
 - `npm run lint` — static analysis only
-- `npm run test` — runs tests (may launch a VS Code instance)
+- `npm run test` — bundles (same as `npm run bundle`)
 - `npm run pretest` — compile + lint
+- `npm run test:compat` — runs compatibility tests (requires running server)
 
 ## Commands Requiring Caution
 

@@ -38,7 +38,10 @@ External clients (curl, Python, LangChain) ──► http://127.0.0.1:9090/v1
 |---|---|---|
 | Extension | [`src/extension.ts`](src/extension.ts) | Lifecycle management, state persistence, wiring components together |
 | Server | [`src/server.ts`](src/server.ts) | Express HTTP server, OpenAI-compatible API routes, SSE streaming |
-| LmBridge | [`src/lmBridge.ts`](src/lmBridge.ts) | Translates OpenAI message format to VS Code LM API, handles token counting, maps tools |
+| LmBridge | [`src/lmBridge.ts`](src/lmBridge.ts) | Translates OpenAI message format to VS Code LM API, handles token counting, maps tools, image handling |
+| CallHistory | [`src/callHistory.ts`](src/callHistory.ts) | Persistent metadata-only call history store (JSON file in global storage) |
+| SessionMetrics | [`src/sessionMetrics.ts`](src/sessionMetrics.ts) | In-memory session metrics store and safe serializer |
+| Config | [`src/config.ts`](src/config.ts) | Configuration helpers (port, retention days, autostart) |
 | SidebarProvider | [`src/webview/provider.ts`](src/webview/provider.ts) | Webview management, model discovery, server start/stop orchestration |
 | Webview Client | [`src/webview/main.js`](src/webview/main.js) | Client-side UI logic, message passing with extension host |
 | Webview Styles | [`src/webview/style.css`](src/webview/style.css) | Sidebar panel styling |

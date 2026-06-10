@@ -15,7 +15,7 @@
 |---|---|---|
 | No API authentication | [`src/server.ts`](src/server.ts:29) | The server accepts any API key. Any local process can use the service. This is intentional (localhost-only) but agents should not add network exposure. |
 | CORS enabled for all origins | [`src/server.ts`](src/server.ts:20) | `cors()` with no options allows all origins. Acceptable for localhost service but risky if server is ever exposed. |
-| Express JSON parsing | [`src/server.ts`](src/server.ts:19) | No request size limit configured on `express.json()`. Large payloads could cause memory issues. |
+| Express JSON parsing | [`src/server.ts`](src/server.ts:19) | 10 MB body limit on `express.json()` to accommodate large agent conversation histories. Requests exceeding 10 MB return HTTP 413. |
 
 ## Performance-Sensitive Areas
 
@@ -50,6 +50,6 @@
 
 ## Gaps
 
-- No test files found in `src/` despite `test` script pointing to `out/test/runTest.js`. Test infrastructure may be incomplete or missing.
+- `npm run test` is configured as `npm run bundle` (no unit test runner). Verification relies on compilation, bundling, and the compatibility test suite.
 - No CI/CD configuration found.
 - No Docker configuration found.
