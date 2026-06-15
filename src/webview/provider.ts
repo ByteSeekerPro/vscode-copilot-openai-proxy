@@ -164,6 +164,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     this._postSessionMetrics();
   }
 
+  /**
+   * Trigger model discovery. Called during extension activation so the model
+   * list and metadata are available before the sidebar is first opened.
+   */
+  public async loadModels(): Promise<void> {
+      await this._refreshModels(true);
+  }
+
   private async _refreshModels(force = false) {
     if (this._isRefreshing) {
         return;
@@ -202,6 +210,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           this._state.selectedModel = 'auto';
           this._onStateChange.fire({ selectedModel: 'auto' });
         }
+
+        this._outputChannel.appendLine(`Selected model: ${this._state.selectedModel}`);
 
         this._view?.webview.postMessage({
             type: 'models',
@@ -640,7 +650,23 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
               <div class="meta-row"><span class="meta-label">Last request</span><span id="mLastRequest" class="meta-value">—</span></div>
               <div class="meta-row"><span class="meta-label">Last model</span><span id="mLastModel" class="meta-value">—</span></div>
               <div class="meta-row"><span class="meta-label">Last error</span><span id="mLastError" class="meta-value">None</span></div>
+              <div id="costSection" class="cost-section" style="display:none;">
+                <div class="meta-row"><span class="meta-label">Estimated input cost</span><span id="mInputCost" class="meta-value cost-value">—</span></div>
+                <div class="meta-row"><span class="meta-label">Estimated output cost</span><span id="mOutputCost" class="meta-value cost-value">—</span></div>
+                <div class="meta-row"><span class="meta-label">Estimated total cost</span><span id="mTotalCost" class="meta-value cost-value">—</span></div>
+                <div id="costNoteRow" class="meta-row cost-note-row" style="display:none;">
+                  <span class="meta-label">Pricing source</span>
+                  <span id="mCostSource" class="meta-value cost-note"></span>
+                </div>
+              </div>
+              <div id="costUnavailable" class="meta-row cost-unavailable" style="display:none;">
+                <span class="meta-label">Estimated cost</span>
+                <span class="meta-value cost-unavailable-value">Not available — pricing metadata is not available for the used model(s).</span>
+              </div>
             </div>
+          </div>
+          <div class="cost-disclaimer">
+            Cost estimates are derived from model metadata exposed by VS Code/GitHub Copilot. They are estimates only and may not match billing exactly.
           </div>
           <div id="perModelMetricsSection" style="display:none;">
             <vscode-label style="margin-top:8px;">Per-Model Metrics</vscode-label>

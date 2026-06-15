@@ -5,6 +5,7 @@ import { SidebarProvider } from './webview/provider';
 import { getPort, getAutoStart } from './config';
 import { CallHistoryStore } from './callHistory';
 import { SessionMetricsStore } from './sessionMetrics';
+import { formatCostUsd } from './pricing';
 
 interface State {
   port: number;
@@ -129,14 +130,39 @@ export function activate(context: vscode.ExtensionContext) {
       if (snapshot.lastErrorSummary) {
         channel.appendLine(`Last error: ${snapshot.lastErrorSummary}`);
       }
+      // Cost summary
+      if (snapshot.totalEstimatedCostUsd > 0) {
+        channel.appendLine('');
+        channel.appendLine('--- Cost Estimate ---');
+        channel.appendLine(`Estimated input cost: ${formatCostUsd(snapshot.totalInputCostUsd)}`);
+        channel.appendLine(`Estimated output cost: ${formatCostUsd(snapshot.totalOutputCostUsd)}`);
+        channel.appendLine(`Estimated total cost: ${formatCostUsd(snapshot.totalEstimatedCostUsd)}`);
+        if (snapshot.lastPricingModel) {
+          channel.appendLine(`Pricing source: ${snapshot.lastPricingModel} metadata`);
+        }
+      } else if (snapshot.unknownPricingRequests > 0) {
+        channel.appendLine('');
+        channel.appendLine('Estimated cost: Not available (pricing metadata not available for used model)');
+      }
       if (snapshot.modelMetrics.length > 0) {
         channel.appendLine('');
         channel.appendLine('--- Per-Model Metrics ---');
         for (const mm of snapshot.modelMetrics) {
           const avgLat = mm.latencyCount > 0 ? Math.round(mm.latencySum / mm.latencyCount) : 0;
-          channel.appendLine(`  ${mm.modelId}: reqs=${mm.requestCount} ok=${mm.successCount} fail=${mm.failureCount} prompt_tokens=${mm.promptTokens} completion_tokens=${mm.completionTokens} total_tokens=${mm.totalTokens} avg_latency=${avgLat}ms`);
+          let line = `  ${mm.modelId}: reqs=${mm.requestCount} ok=${mm.successCount} fail=${mm.failureCount} prompt_tokens=${mm.promptTokens} completion_tokens=${mm.completionTokens} total_tokens=${mm.totalTokens} avg_latency=${avgLat}ms`;
+          if (mm.totalCostUsd > 0) {
+            line += ` estimated_cost=${formatCostUsd(mm.totalCostUsd)}`;
+          } else if (mm.unknownPricingRequests > 0) {
+            line += ' estimated_cost=N/A';
+          }
+          if (mm.inputUsdPer1M != null && mm.outputUsdPer1M != null) {
+            line += ` rate=$${mm.inputUsdPer1M.toFixed(2)}/$${mm.outputUsdPer1M.toFixed(2)} per 1M`;
+          }
+          channel.appendLine(line);
         }
       }
+      channel.appendLine('');
+      channel.appendLine('Note: Cost estimates are derived from model metadata. They are estimates only.');
       channel.show();
     })
   );
@@ -164,6 +190,13 @@ export function activate(context: vscode.ExtensionContext) {
       outputChannel.appendLine(`Auto-start failed: ${err.message ?? err}`);
     });
   }
+
+  // Load models eagerly during activation so the sidebar has model data,
+  // selected model, and metadata available immediately — even before the
+  // sidebar panel is opened for the first time.
+  sidebarProvider.loadModels().catch((err) => {
+    outputChannel.appendLine(`Model loading failed: ${err.message ?? err}`);
+  });
 
   outputChannel.appendLine('Copilot OpenAI Proxy Activated');
 }

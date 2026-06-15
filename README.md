@@ -215,6 +215,68 @@ All errors return OpenAI-compatible JSON:
 - No external pricing lookup is performed
 - If no pricing fields exist in the raw metadata, pricing shows as `Not provided by available model metadata`
 
+### Cost Estimation
+
+The extension provides estimated USD cost for chat completion requests when model pricing metadata is available.
+
+#### How Cost Is Calculated
+
+Model pricing metadata exposes cost fields in **AICs (AI Credits) per 1M tokens**:
+
+| Field | Meaning | Example |
+|-------|---------|---------|
+| `inputCost` | AICs per 1M input tokens | `300` |
+| `outputCost` | AICs per 1M output tokens | `1500` |
+| `cacheCost` | AICs per 1M cached input tokens | `30` |
+
+#### AIC-to-USD Conversion
+
+```
+USD per 1M tokens = AIC value / 100
+```
+
+For example:
+- `inputCost: 300` → `$3.00 / 1M input tokens`
+- `outputCost: 1500` → `$15.00 / 1M output tokens`
+- `cacheCost: 30` → `$0.30 / 1M cached input tokens`
+
+#### Per-Request Cost
+
+```
+inputCostUsd  = promptTokens     / 1,000,000 × inputUsdPer1M
+outputCostUsd = completionTokens / 1,000,000 × outputUsdPer1M
+totalCostUsd  = inputCostUsd + outputCostUsd
+```
+
+Example with `claude-sonnet-4.5` (`inputCost=300`, `outputCost=1500`):
+
+```
+Prompt tokens:     4,409
+Completion tokens:    11
+
+Input:  4,409 / 1,000,000 × $3.00  = $0.013227
+Output:    11 / 1,000,000 × $15.00 = $0.000165
+Total:                              = $0.013392
+```
+
+#### Where Cost Is Displayed
+
+| Location | What |
+|----------|------|
+| **Current Session Metrics** | Total estimated input/output/total cost for the session |
+| **Per-Model Metrics** | Per-model cost breakdown with pricing rate |
+| **Recent Calls** | Per-request cost if available, or "unknown" |
+| **Output Channel** (`Show Session Metrics` command) | Cost summary with per-model breakdown |
+
+#### Limitations
+
+- Cost is **estimated** only — it may not match actual billing
+- Cost is only available when both **token usage** and **pricing metadata** are available
+- The `auto` model selection may not always have resolvable pricing if the effective model is unknown
+- Cached token costs are only calculated when cached token count data is available (not currently exposed by the VS Code LM API)
+- Pricing metadata availability depends on what VS Code / GitHub Copilot exposes at runtime
+- No external pricing lookup is performed — all pricing comes from the model object
+
 ## Development
 
 ```cmd

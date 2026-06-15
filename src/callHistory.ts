@@ -20,6 +20,10 @@ export interface CallHistoryEntry {
   endpoint: string;
   /** Model name if available, otherwise null. */
   model: string | null;
+  /** The model ID from the request body (e.g. "auto"), or null. */
+  requestedModel?: string | null;
+  /** The effective/concrete model ID resolved by the bridge, or null. */
+  effectiveModel?: string | null;
   /** HTTP status code if available, otherwise null. */
   statusCode: number | null;
   /** Whether the request succeeded (status 2xx). */
@@ -38,6 +42,16 @@ export interface CallHistoryEntry {
   error: string | null;
   /** Whether the request included image content parts, if detected. */
   imageInput?: boolean | null;
+  /** Estimated input cost in USD, or null if pricing unavailable. */
+  estimatedInputCostUsd?: number | null;
+  /** Estimated output cost in USD, or null if pricing unavailable. */
+  estimatedOutputCostUsd?: number | null;
+  /** Estimated total cost in USD, or null if pricing unavailable. */
+  estimatedTotalCostUsd?: number | null;
+  /** Model ID used for pricing lookup, or null. */
+  pricingModel?: string | null;
+  /** Whether pricing was available for this request. */
+  pricingAvailable?: boolean;
 }
 
 /** Filename for persisted call history in global storage. */

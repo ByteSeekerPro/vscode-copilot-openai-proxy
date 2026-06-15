@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { extractPricingFromModel, ModelPricingInfo } from './pricing';
 
 // ---------------------------------------------------------------------------
 // Content normalization helpers
@@ -318,10 +319,33 @@ export function validateMessages(messages: unknown, options?: { supportsImage?: 
 }
 
 export class LmBridge {
+  /** Cached pricing info keyed by model ID. */
+  private pricingCache = new Map<string, ModelPricingInfo | null>();
+
   constructor(private outputChannel?: vscode.OutputChannel) {}
 
   async getModels(): Promise<vscode.LanguageModelChat[]> {
     return await vscode.lm.selectChatModels();
+  }
+
+  /**
+   * Look up pricing info for a model by ID.
+   * Caches results so repeated lookups do not call the VS Code API.
+   * Returns null if the model is not found or has no pricing metadata.
+   */
+  async getModelPricingInfo(modelId: string): Promise<ModelPricingInfo | null> {
+    if (this.pricingCache.has(modelId)) {
+      return this.pricingCache.get(modelId)!;
+    }
+    const models = await this.getModels();
+    const model = models.find((m) => m.id === modelId) || models[0];
+    if (!model) {
+      this.pricingCache.set(modelId, null);
+      return null;
+    }
+    const pricing = extractPricingFromModel(model as any);
+    this.pricingCache.set(model.id, pricing);
+    return pricing;
   }
 
   async *streamChatCompletion(
@@ -330,7 +354,7 @@ export class LmBridge {
     _options: { temperature?: number; max_tokens?: number; stream?: boolean },
     tools?: any[],
     _toolChoice?: any
-  ): AsyncIterable<string | { type: 'tool_call', data: any } | { type: 'usage', data: { prompt_tokens?: number, completion_tokens?: number, total_tokens?: number } }> {
+  ): AsyncIterable<string | { type: 'tool_call', data: any } | { type: 'usage', data: { prompt_tokens?: number, completion_tokens?: number, total_tokens?: number, effective_model_id?: string } }> {
     const models = await this.getModels();
     const model = models.find((m) => m.id === modelId) || models[0];
 
@@ -352,7 +376,9 @@ export class LmBridge {
         for (const msg of vscodeMessages) {
             promptTokens += await model.countTokens(msg, new vscode.CancellationTokenSource().token);
         }
-        yield { type: 'usage', data: { prompt_tokens: promptTokens } };
+        // Always include effective_model_id so the server can use it for
+        // pricing lookup even if completion token counting later fails.
+        yield { type: 'usage', data: { prompt_tokens: promptTokens, effective_model_id: model.id } };
     } catch (error) {
         console.error('Error computing prompt tokens:', error);
     }
@@ -405,13 +431,19 @@ export class LmBridge {
         }
         
         const completionTokens = await model.countTokens(completionText, new vscode.CancellationTokenSource().token);
-        yield { type: 'usage', data: { 
+        yield { type: 'usage', data: {
             prompt_tokens: promptTokens,
-            completion_tokens: completionTokens, 
-            total_tokens: promptTokens + completionTokens 
+            completion_tokens: completionTokens,
+            total_tokens: promptTokens + completionTokens,
+            effective_model_id: model.id,
         } };
     } catch (error) {
         console.error('Error computing completion tokens:', error);
+    }
+
+    // Cache pricing for the effective model if not already cached.
+    if (!this.pricingCache.has(model.id)) {
+      this.pricingCache.set(model.id, extractPricingFromModel(model as any));
     }
   }
 

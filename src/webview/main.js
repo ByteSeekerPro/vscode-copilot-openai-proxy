@@ -85,6 +85,15 @@ const resetMetricsBtn        = document.getElementById('resetMetrics');
 const perModelMetricsSection = document.getElementById('perModelMetricsSection');
 const perModelMetricsList    = document.getElementById('perModelMetricsList');
 
+// Cost elements
+const costSection            = document.getElementById('costSection');
+const mInputCost             = document.getElementById('mInputCost');
+const mOutputCost            = document.getElementById('mOutputCost');
+const mTotalCost             = document.getElementById('mTotalCost');
+const costNoteRow            = document.getElementById('costNoteRow');
+const mCostSource            = document.getElementById('mCostSource');
+const costUnavailable        = document.getElementById('costUnavailable');
+
 // Call history
 const callHistoryList        = document.getElementById('callHistoryList');
 const refreshCallHistoryBtn  = document.getElementById('refreshCallHistory');
@@ -390,13 +399,47 @@ function updateSessionMetrics(metrics) {
             : '\u2014';
     }
     if (mLastModel) {
-        mLastModel.textContent = metrics.lastUsedModel || '\u2014';
+        // Show effective model with requested model annotation when they differ.
+        var effectiveModel = metrics.lastEffectiveModel || metrics.lastUsedModel;
+        var requestedModel = metrics.lastRequestedModel;
+        if (effectiveModel && requestedModel && effectiveModel !== requestedModel) {
+            mLastModel.textContent = effectiveModel + ' (requested: ' + requestedModel + ')';
+        } else if (effectiveModel) {
+            mLastModel.textContent = effectiveModel;
+        } else {
+            mLastModel.textContent = metrics.lastUsedModel || '\u2014';
+        }
     }
     if (mLastError) {
         mLastError.textContent = metrics.lastErrorSummary || 'None';
         mLastError.style.color = metrics.lastErrorSummary
             ? 'var(--vscode-charts-red)'
             : '';
+    }
+
+    // Session cost display
+    var hasAnyCost = metrics.totalEstimatedCostUsd > 0;
+    var hasAnyUnknown = metrics.unknownPricingRequests > 0;
+
+    if (costSection) {
+        costSection.style.display = (hasAnyCost) ? '' : 'none';
+    }
+    if (hasAnyCost) {
+        if (mInputCost) { mInputCost.textContent = formatCost(metrics.totalInputCostUsd); }
+        if (mOutputCost) { mOutputCost.textContent = formatCost(metrics.totalOutputCostUsd); }
+        if (mTotalCost) { mTotalCost.textContent = formatCost(metrics.totalEstimatedCostUsd); }
+    }
+    if (costNoteRow && mCostSource) {
+        if (metrics.lastPricingModel) {
+            costNoteRow.style.display = '';
+            mCostSource.textContent = metrics.lastPricingModel + ' metadata';
+        } else {
+            costNoteRow.style.display = 'none';
+        }
+    }
+    if (costUnavailable) {
+        // Show "not available" only if there are unknown-price requests AND no cost data at all
+        costUnavailable.style.display = (!hasAnyCost && hasAnyUnknown) ? '' : 'none';
     }
 
     // Per-model breakdown
@@ -407,10 +450,35 @@ function updateSessionMetrics(metrics) {
             const promptTok = mm.promptTokens > 0 ? mm.promptTokens.toLocaleString() : 'Unknown';
             const compTok = mm.completionTokens > 0 ? mm.completionTokens.toLocaleString() : 'Unknown';
             const totalTok = mm.totalTokens > 0 ? mm.totalTokens.toLocaleString() : 'Unknown';
+
+            var rateLine = '';
+            if (mm.inputUsdPer1M != null && mm.outputUsdPer1M != null) {
+                rateLine = '<div class="per-model-rate">Rate: $' +
+                    mm.inputUsdPer1M.toFixed(2) + ' input / $' +
+                    mm.outputUsdPer1M.toFixed(2) + ' output per 1M tokens</div>';
+            }
+
+            var costLine = '';
+            if (mm.totalCostUsd > 0) {
+                costLine = '<div class="per-model-cost">Estimated cost: ' + formatCost(mm.totalCostUsd) + '</div>';
+            } else if (mm.unknownPricingRequests > 0) {
+                costLine = '<div class="per-model-cost per-model-cost-unknown">Cost: pricing unavailable</div>';
+            }
+
+            // Show "requested as: auto" when the effective model differs from the request.
+            var requestedAsLine = '';
+            if (mm.requestedAs && mm.requestedAs.length > 0) {
+                var differs = mm.requestedAs.some(function(r) { return r !== mm.modelId; });
+                if (differs) {
+                    requestedAsLine = '<div class="per-model-requested-as">requested as: ' +
+                        escapeHtml(mm.requestedAs.join(', ')) + '</div>';
+                }
+            }
+
             return '<div class="per-model-entry">' +
                 '<div class="per-model-header">' +
                     '<span class="per-model-name">' + escapeHtml(mm.modelId) + '</span>' +
-                    '<span class="per-model-reqs">' + mm.requestCount + ' reqs</span>' +
+                    '<span class="per-model-reqs">' + mm.requestCount + ' req' + (mm.requestCount !== 1 ? 's' : '') + '</span>' +
                 '</div>' +
                 '<div class="per-model-details">' +
                     '<span>ok: ' + mm.successCount + '</span>' +
@@ -418,6 +486,9 @@ function updateSessionMetrics(metrics) {
                     ' \u00b7 <span>tokens: ' + promptTok + '/' + compTok + '/' + totalTok + '</span>' +
                     ' \u00b7 <span>avg: ' + avgLat + 'ms</span>' +
                 '</div>' +
+                requestedAsLine +
+                rateLine +
+                costLine +
             '</div>';
         }).join('');
     } else if (perModelMetricsSection) {
@@ -438,7 +509,6 @@ function updateCallHistory(data) {
     callHistoryList.innerHTML = entries.map(entry => {
         const time = entry.timestamp ? formatTimestamp(entry.timestamp) : '\u2014';
         const endpoint = entry.endpoint || '\u2014';
-        const model = entry.model || '\u2014';
         const statusLabel = entry.success
             ? '<span class="call-ok">OK</span>'
             : '<span class="call-fail">FAIL</span>';
@@ -450,6 +520,24 @@ function updateCallHistory(data) {
         const errorPart = entry.error ? '<div class="call-error">' + escapeHtml(truncate(entry.error, 60)) + '</div>' : '';
         const imagePart = entry.imageInput ? ' \u00b7 <span>image: yes</span>' : '';
 
+        // Model display: show effective model with requested model annotation.
+        const effectiveModel = entry.effectiveModel || entry.model;
+        const requestedModel = entry.requestedModel || entry.model;
+        var modelDisplay = '';
+        if (effectiveModel && requestedModel && effectiveModel !== requestedModel) {
+            modelDisplay = escapeHtml(effectiveModel) + ' <span class="call-model-requested">(requested: ' + escapeHtml(requestedModel) + ')</span>';
+        } else {
+            modelDisplay = escapeHtml(effectiveModel || entry.model || '\u2014');
+        }
+
+        // Cost display for recent calls
+        var costPart = '';
+        if (entry.pricingAvailable === true && entry.estimatedTotalCostUsd != null && entry.estimatedTotalCostUsd > 0) {
+            costPart = ' \u00b7 <span class="call-cost">cost: ' + formatCost(entry.estimatedTotalCostUsd) + '</span>';
+        } else if (entry.pricingAvailable === false) {
+            costPart = ' \u00b7 <span class="call-cost-unknown">cost: unknown</span>';
+        }
+
         return '<div class="call-entry">' +
             '<div class="call-header">' +
                 '<span class="call-endpoint">' + escapeHtml(endpoint) + '</span>' +
@@ -458,10 +546,11 @@ function updateCallHistory(data) {
             '</div>' +
             '<div class="call-details">' +
                 '<span>' + escapeHtml(time) + '</span>' +
-                ' \u00b7 <span>model: ' + escapeHtml(model) + '</span>' +
+                ' \u00b7 <span>model: ' + modelDisplay + '</span>' +
                 ' \u00b7 <span>stream: ' + escapeHtml(streaming) + '</span>' +
                 (tokens ? ' \u00b7 <span>tokens: ' + escapeHtml(tokens) + '</span>' : '') +
                 imagePart +
+                costPart +
             '</div>' +
             errorPart +
         '</div>';
@@ -489,6 +578,17 @@ function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+}
+
+/**
+ * Format a USD cost value for display.
+ * Uses 6 decimals for very small values, 4 for < $1, 2 for >= $1.
+ */
+function formatCost(amount) {
+    if (amount === 0) { return '$0.00'; }
+    if (amount < 0.01) { return '$' + amount.toFixed(6); }
+    if (amount < 1) { return '$' + amount.toFixed(4); }
+    return '$' + amount.toFixed(2);
 }
 
 // ── Messages from the extension host ─────────────────────────────────────────

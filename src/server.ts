@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import { LmBridge, validateMessages, ContentValidationError, hasImageContent } from './lmBridge';
 import { CallHistoryStore, CallHistoryEntry } from './callHistory';
 import { SessionMetricsStore } from './sessionMetrics';
+import { calculateCost, formatCostUsd } from './pricing';
 
 export class Server {
   private app: express.Express;
@@ -179,9 +180,28 @@ export class Server {
 
           res.write('data: [DONE]\n\n');
           res.end();
+
+          // Determine the effective model that was actually used.
+          // The bridge may resolve "auto" to a concrete model ID.
+          const effectiveModel = finalUsage?.effective_model_id ?? null;
+          if (model !== effectiveModel && effectiveModel) {
+            this.outputChannel.appendLine(
+              `[Model Resolution] requested=${model} effective=${effectiveModel}`
+            );
+          }
+
+          // Resolve pricing for the effective model and compute cost.
+          const costEstimate = await this.resolveCost(
+            effectiveModel ?? model,
+            finalUsage?.prompt_tokens ?? null,
+            finalUsage?.completion_tokens ?? null
+          );
+
           this.recordEntry({
             endpoint: '/v1/chat/completions',
             model: model ?? null,
+            requestedModel: model ?? null,
+            effectiveModel: effectiveModel,
             statusCode: 200,
             latencyMs: Date.now() - startTime,
             success: true,
@@ -190,6 +210,7 @@ export class Server {
             completionTokens: finalUsage?.completion_tokens ?? null,
             totalTokens: finalUsage?.total_tokens ?? null,
             imageInput: requestHasImages || undefined,
+            costEstimate,
           });
         } else {
           // Non-streaming
@@ -232,9 +253,27 @@ export class Server {
           }
 
           res.json(responseData);
+
+          // Determine the effective model that was actually used.
+          const effectiveModel = usage.effective_model_id ?? null;
+          if (model !== effectiveModel && effectiveModel) {
+            this.outputChannel.appendLine(
+              `[Model Resolution] requested=${model} effective=${effectiveModel}`
+            );
+          }
+
+          // Resolve pricing for the effective model and compute cost.
+          const costEstimate = await this.resolveCost(
+            effectiveModel ?? model,
+            usage.prompt_tokens ?? null,
+            usage.completion_tokens ?? null
+          );
+
           this.recordEntry({
             endpoint: '/v1/chat/completions',
             model: model ?? null,
+            requestedModel: model ?? null,
+            effectiveModel: effectiveModel,
             statusCode: 200,
             latencyMs: Date.now() - startTime,
             success: true,
@@ -243,6 +282,7 @@ export class Server {
             completionTokens: usage.completion_tokens ?? null,
             totalTokens: usage.total_tokens ?? null,
             imageInput: requestHasImages || undefined,
+            costEstimate,
           });
         }
       } catch (error: any) {
@@ -260,6 +300,8 @@ export class Server {
         this.recordEntry({
           endpoint: '/v1/chat/completions',
           model: model ?? null,
+          requestedModel: model ?? null,
+          effectiveModel: null,
           statusCode: statusCode,
           latencyMs: Date.now() - startTime,
           success: false,
@@ -271,10 +313,41 @@ export class Server {
     });
   }
 
+  /**
+   * Resolve pricing for a model and compute cost estimate.
+   * Non-fatal — returns null if pricing is unavailable or lookup fails.
+   */
+  private async resolveCost(
+    effectiveModelId: string | undefined | null,
+    promptTokens: number | null,
+    completionTokens: number | null
+  ) {
+    if (!effectiveModelId) {
+      return null;
+    }
+    try {
+      const pricing = await this.lmBridge.getModelPricingInfo(effectiveModelId);
+      const estimate = calculateCost(pricing, promptTokens, completionTokens);
+      if (estimate.pricingAvailable && this.verbose) {
+        this.outputChannel.appendLine(
+          `[Cost] ${effectiveModelId}: input=${formatCostUsd(estimate.inputCostUsd)} output=${formatCostUsd(estimate.outputCostUsd)} total=${formatCostUsd(estimate.totalCostUsd)}`
+        );
+      }
+      return { pricing, estimate, effectiveModelId };
+    } catch {
+      // Pricing lookup failure is non-fatal.
+      return null;
+    }
+  }
+
   /** Record a call history entry. Non-fatal — errors are logged, never thrown. */
   private recordEntry(fields: {
     endpoint: string;
     model?: string | null;
+    /** The model ID from the request body (e.g. "auto"). */
+    requestedModel?: string | null;
+    /** The effective/concrete model ID resolved by the bridge, or null. */
+    effectiveModel?: string | null;
     statusCode?: number | null;
     latencyMs?: number | null;
     success?: boolean;
@@ -284,14 +357,30 @@ export class Server {
     totalTokens?: number | null;
     error?: string | null;
     imageInput?: boolean;
+    costEstimate?: {
+      pricing: import('./pricing').ModelPricingInfo | null;
+      estimate: import('./pricing').CostEstimate;
+      effectiveModelId: string;
+    } | null;
   }): void {
     const timestamp = new Date().toISOString();
+
+    // Compute cost fields from the estimate.
+    const cost = fields.costEstimate;
+    const pricingAvailable = cost?.estimate.pricingAvailable ?? null;
+    const inputCostUsd = cost?.estimate.pricingAvailable ? cost.estimate.inputCostUsd : null;
+    const outputCostUsd = cost?.estimate.pricingAvailable ? cost.estimate.outputCostUsd : null;
+    const totalCostUsd = cost?.estimate.pricingAvailable ? cost.estimate.totalCostUsd : null;
+    const pricingModel = cost?.effectiveModelId ?? null;
+
     const entry: CallHistoryEntry = {
       id: Server.entryId(),
       timestamp,
       method: 'POST',
       endpoint: fields.endpoint,
       model: fields.model ?? null,
+      requestedModel: fields.requestedModel ?? fields.model ?? null,
+      effectiveModel: fields.effectiveModel ?? null,
       statusCode: fields.statusCode ?? null,
       success: fields.success ?? true,
       latencyMs: fields.latencyMs ?? null,
@@ -301,6 +390,11 @@ export class Server {
       totalTokens: fields.totalTokens ?? null,
       error: fields.error ?? null,
       imageInput: fields.imageInput ?? null,
+      estimatedInputCostUsd: inputCostUsd,
+      estimatedOutputCostUsd: outputCostUsd,
+      estimatedTotalCostUsd: totalCostUsd,
+      pricingModel,
+      pricingAvailable: pricingAvailable ?? undefined,
     };
     this.callHistoryStore.append(entry).catch((err) => {
       this.outputChannel.appendLine(`[CallHistory] Write failed: ${err.message ?? err}`);
@@ -312,6 +406,8 @@ export class Server {
       endpoint: fields.endpoint,
       method: 'POST',
       model: fields.model ?? null,
+      requestedModel: fields.requestedModel ?? fields.model ?? null,
+      effectiveModel: fields.effectiveModel ?? null,
       success: fields.success ?? true,
       statusCode: fields.statusCode ?? null,
       latencyMs: fields.latencyMs ?? null,
@@ -320,6 +416,13 @@ export class Server {
       completionTokens: fields.completionTokens ?? null,
       totalTokens: fields.totalTokens ?? null,
       error: fields.error ?? null,
+      estimatedInputCostUsd: inputCostUsd,
+      estimatedOutputCostUsd: outputCostUsd,
+      estimatedTotalCostUsd: totalCostUsd,
+      pricingModel,
+      pricingAvailable: pricingAvailable ?? undefined,
+      inputUsdPer1M: cost?.pricing?.inputUsdPer1M ?? null,
+      outputUsdPer1M: cost?.pricing?.outputUsdPer1M ?? null,
     });
   }
 
