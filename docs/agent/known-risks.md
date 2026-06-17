@@ -30,6 +30,8 @@
 | Assumption | Location | Notes |
 |---|---|---|
 | `LanguageModelToolCallPart` cast to `any` | [`src/lmBridge.ts`](src/lmBridge.ts:60) | Uses `(vscode as any).LanguageModelToolCallPart` — may indicate this API type is not yet stable or was added after the initial `@types/vscode` version. |
+| tool_choice cannot be enforced | [`src/toolHelpers.ts`](src/toolHelpers.ts:137) | The VS Code Language Model API does not support `tool_choice` enforcement. `tool_choice_enforced` is always `false`. Requests with `tool_choice:"required"` or specific function may still produce text-only responses. The `toolChoicePolicy` setting (`bestEffort`, `strictPreflight`, `strictAfterResponse`) controls how the bridge handles this. Logged via `[ToolDiag]` in the output channel. |
+| strictAfterResponse streaming limitation | [`src/server.ts`](src/server.ts) | The `strictAfterResponse` policy cannot fully enforce rejection for streaming requests because SSE chunks are already sent to the client before the full response can be inspected. Streaming requests with `strictAfterResponse` behave as `bestEffort` with diagnostic logging. Use `strictPreflight` if streaming rejection is required. |
 | Server `any` type | [`src/server.ts`](src/server.ts:9) | `private server: any` — the HTTP server instance is untyped. |
 | State typed as `any` | [`src/webview/provider.ts`](src/webview/provider.ts:15) | `private _state: any` — sidebar state not strongly typed despite `State` interface existing in `extension.ts`. |
 

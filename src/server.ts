@@ -3,6 +3,15 @@ import cors from 'cors';
 import * as net from 'net';
 import * as vscode from 'vscode';
 import { LmBridge, validateMessages, ContentValidationError, hasImageContent } from './lmBridge';
+import {
+  validateTools,
+  buildRequestDiagnostics,
+  buildResponseDiagnostics,
+  isToolChoiceRequired,
+  buildToolChoiceNotEnforceableError,
+  buildRequiredToolCallMissingError,
+} from './toolHelpers';
+import { getToolChoicePolicy } from './config';
 import { CallHistoryStore, CallHistoryEntry } from './callHistory';
 import { SessionMetricsStore } from './sessionMetrics';
 import { calculateCost, formatCostUsd } from './pricing';
@@ -82,6 +91,45 @@ export class Server {
       // Detect image content presence for metadata tracking
       const requestHasImages = Array.isArray(messages) && hasImageContent(messages);
 
+      // -----------------------------------------------------------------
+      // Tool choice policy
+      // -----------------------------------------------------------------
+      const toolChoicePolicy = getToolChoicePolicy();
+
+      // -----------------------------------------------------------------
+      // Tool request diagnostics (safe metadata only — no content/args)
+      // -----------------------------------------------------------------
+      const reqDiag = buildRequestDiagnostics(tools, tool_choice, toolChoicePolicy);
+      this.outputChannel.appendLine(
+        `[ToolDiag] tools_present=${reqDiag.tools_present} tools_count=${reqDiag.tools_count} tool_choice=${reqDiag.tool_choice_category} agentic=${reqDiag.is_agentic_request} enforced=${reqDiag.tool_choice_enforced} policy=${reqDiag.tool_choice_policy}`
+      );
+
+      // -----------------------------------------------------------------
+      // Validate incoming tools
+      // -----------------------------------------------------------------
+      const toolValidationError = validateTools(tools);
+      if (toolValidationError) {
+        res.status(toolValidationError.status).json({
+          error: {
+            message: toolValidationError.message,
+            type: 'invalid_request_error',
+            param: 'tools',
+            code: 'invalid_tools',
+          },
+        });
+        this.recordEntry({
+          endpoint: '/v1/chat/completions',
+          model: model ?? null,
+          statusCode: toolValidationError.status,
+          latencyMs: Date.now() - startTime,
+          success: false,
+          streaming: typeof stream === 'boolean' ? stream : null,
+          error: toolValidationError.message,
+          imageInput: requestHasImages || undefined,
+        });
+        return;
+      }
+
       // Look up model capabilities to determine if image input is supported.
       // This is needed before validation so we can accept image parts for
       // image-capable models instead of rejecting them outright.
@@ -115,6 +163,36 @@ export class Server {
         return;
       }
 
+      // -----------------------------------------------------------------
+      // Tool choice policy: strictPreflight
+      // Reject before calling VS Code LM when tool_choice requires
+      // enforcement and the policy mandates preflight rejection.
+      // Applies to both streaming and non-streaming requests.
+      // -----------------------------------------------------------------
+      if (
+        toolChoicePolicy === 'strictPreflight' &&
+        isToolChoiceRequired(reqDiag.tool_choice_category) &&
+        !reqDiag.tool_choice_enforced
+      ) {
+        reqDiag.preflight_rejected = true;
+        this.outputChannel.appendLine(
+          `[ToolDiag] tool_choice_policy=${reqDiag.tool_choice_policy} tool_choice_requested=true tool_choice_enforced=${reqDiag.tool_choice_enforced} preflight_rejected=true`
+        );
+        res.status(400).json(buildToolChoiceNotEnforceableError());
+        this.recordEntry({
+          endpoint: '/v1/chat/completions',
+          model: model ?? null,
+          requestedModel: model ?? null,
+          statusCode: 400,
+          latencyMs: Date.now() - startTime,
+          success: false,
+          streaming: typeof stream === 'boolean' ? stream : null,
+          error: 'tool_choice_not_enforceable',
+          imageInput: requestHasImages || undefined,
+        });
+        return;
+      }
+
       try {
         if (stream) {
           res.setHeader('Content-Type', 'text/event-stream');
@@ -124,8 +202,32 @@ export class Server {
           const responseStream = this.lmBridge.streamChatCompletion(model, messages, { temperature, max_tokens, stream }, tools, tool_choice);
 
           let finalUsage: any = null;
+          let streamHasToolCalls = false;
+          let streamHasText = false;
+          let roleEmitted = false;
+
           for await (const chunk of responseStream) {
+            // Emit the initial role delta once, on the first content/tool chunk
+            if (!roleEmitted && (typeof chunk === 'string' || chunk.type === 'tool_call')) {
+              const roleDelta = {
+                id: `chatcmpl-${Date.now()}`,
+                object: 'chat.completion.chunk',
+                created: Math.floor(Date.now() / 1000),
+                model: model,
+                choices: [
+                  {
+                    index: 0,
+                    delta: { role: 'assistant' },
+                    finish_reason: null,
+                  },
+                ],
+              };
+              res.write(`data: ${JSON.stringify(roleDelta)}\n\n`);
+              roleEmitted = true;
+            }
+
             if (typeof chunk === 'string') {
+              streamHasText = true;
               const data = {
                 id: `chatcmpl-${Date.now()}`,
                 object: 'chat.completion.chunk',
@@ -144,6 +246,7 @@ export class Server {
               }
               res.write(`data: ${JSON.stringify(data)}\n\n`);
             } else if (chunk.type === 'tool_call') {
+              streamHasToolCalls = true;
               const data = {
                 id: `chatcmpl-${Date.now()}`,
                 object: 'chat.completion.chunk',
@@ -166,6 +269,23 @@ export class Server {
             }
           }
 
+          // Emit final chunk with finish_reason
+          const finalFinishReason = streamHasToolCalls ? 'tool_calls' : 'stop';
+          const finalChunk = {
+            id: `chatcmpl-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: model,
+            choices: [
+              {
+                index: 0,
+                delta: {},
+                finish_reason: finalFinishReason,
+              },
+            ],
+          };
+          res.write(`data: ${JSON.stringify(finalChunk)}\n\n`);
+
           if (finalUsage) {
             const usageData = {
               id: `chatcmpl-${Date.now()}`,
@@ -180,6 +300,15 @@ export class Server {
 
           res.write('data: [DONE]\n\n');
           res.end();
+
+          // Response diagnostics (safe metadata only)
+          const streamRespDiag = buildResponseDiagnostics(streamHasText, streamHasToolCalls ? [{ _stub: true }] : [], reqDiag);
+          // Note: strictAfterResponse is not fully enforceable for streaming
+          // because chunks are already sent before we can inspect the full response.
+          // It behaves as bestEffort with diagnostic logging for streaming requests.
+          this.outputChannel.appendLine(
+            `[ToolDiag:stream] has_text=${streamRespDiag.lm_response_has_text} has_tool_calls=${streamRespDiag.lm_response_has_tool_calls} tool_calls_count=${streamRespDiag.lm_response_tool_calls_count} finish_reason=${streamRespDiag.mapped_openai_finish_reason} enforced=${streamRespDiag.tool_choice_enforced} required_missing=${streamRespDiag.required_tool_call_missing} policy=${streamRespDiag.tool_choice_policy}`
+          );
 
           // Determine the effective model that was actually used.
           // The bridge may resolve "auto" to a concrete model ID.
@@ -229,6 +358,15 @@ export class Server {
             }
           }
 
+          // Build the OpenAI-compatible assistant message.
+          // Per OpenAI spec: content is null when tool_calls are present.
+          const hasToolCalls = tool_calls.length > 0;
+          const assistantMessage: Record<string, unknown> = {
+            role: 'assistant',
+            content: hasToolCalls ? null : (fullText || ''),
+            ...(hasToolCalls ? { tool_calls } : {}),
+          };
+
           const responseData = {
             id: `chatcmpl-${Date.now()}`,
             object: 'chat.completion',
@@ -237,12 +375,8 @@ export class Server {
             choices: [
               {
                 index: 0,
-                message: {
-                  role: 'assistant',
-                  content: fullText,
-                  ...(tool_calls.length > 0 ? { tool_calls } : {})
-                },
-                finish_reason: tool_calls.length > 0 ? 'tool_calls' : 'stop',
+                message: assistantMessage,
+                finish_reason: hasToolCalls ? 'tool_calls' : 'stop',
               },
             ],
             usage: usage,
@@ -250,6 +384,44 @@ export class Server {
 
           if (this.verbose) {
             this.outputChannel.appendLine(`[Response] ${JSON.stringify(responseData, null, 2)}`);
+          }
+
+          // Response diagnostics (safe metadata only)
+          const respDiag = buildResponseDiagnostics(fullText.length > 0, tool_calls, reqDiag);
+          this.outputChannel.appendLine(
+            `[ToolDiag] has_text=${respDiag.lm_response_has_text} has_tool_calls=${respDiag.lm_response_has_tool_calls} tool_calls_count=${respDiag.lm_response_tool_calls_count} finish_reason=${respDiag.mapped_openai_finish_reason} enforced=${respDiag.tool_choice_enforced} required_missing=${respDiag.required_tool_call_missing} policy=${respDiag.tool_choice_policy}`
+          );
+
+          // -----------------------------------------------------------------
+          // Tool choice policy: strictAfterResponse
+          // If tool_choice required enforcement and no tool_calls were returned,
+          // reject with an OpenAI-compatible error instead of returning text.
+          // -----------------------------------------------------------------
+          if (
+            toolChoicePolicy === 'strictAfterResponse' &&
+            respDiag.required_tool_call_missing
+          ) {
+            respDiag.rejected_after_response = true;
+            this.outputChannel.appendLine(
+              `[ToolDiag] tool_choice_policy=${respDiag.tool_choice_policy} required_tool_call_missing=true rejected_after_response=true has_text=${respDiag.lm_response_has_text} has_tool_calls=${respDiag.lm_response_has_tool_calls}`
+            );
+            res.status(400).json(buildRequiredToolCallMissingError());
+            this.recordEntry({
+              endpoint: '/v1/chat/completions',
+              model: model ?? null,
+              requestedModel: model ?? null,
+              effectiveModel: usage.effective_model_id ?? null,
+              statusCode: 400,
+              latencyMs: Date.now() - startTime,
+              success: false,
+              streaming: false,
+              promptTokens: usage.prompt_tokens ?? null,
+              completionTokens: usage.completion_tokens ?? null,
+              totalTokens: usage.total_tokens ?? null,
+              error: 'required_tool_call_missing',
+              imageInput: requestHasImages || undefined,
+            });
+            return;
           }
 
           res.json(responseData);

@@ -78,6 +78,16 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically start the local proxy server when the extension activates."
+        },
+        "vscode-copilot-openai-proxy.toolChoicePolicy": {
+          "type": "string",
+          "enum": [
+            "bestEffort",
+            "strictPreflight",
+            "strictAfterResponse"
+          ],
+          "default": "bestEffort",
+          "description": "Controls how the bridge handles OpenAI tool_choice values that require tool calls when the VS Code Language Model API cannot enforce them."
         }
       }
     },

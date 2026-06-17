@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { extractPricingFromModel, ModelPricingInfo } from './pricing';
+import { generateToolCallId } from './toolHelpers';
 
 // ---------------------------------------------------------------------------
 // Content normalization helpers
@@ -406,11 +407,13 @@ export class LmBridge {
             fullText += fragment.value;
             yield fragment.value;
         } else if (fragment instanceof (vscode as any).LanguageModelToolCallPart) {
+            const callName = (fragment as any).name;
+            const callId = (fragment as any).callId || generateToolCallId(callName, toolCalls.length);
             const toolCallData = {
-                id: (fragment as any).callId,
+                id: callId,
                 type: 'function',
                 function: {
-                    name: (fragment as any).name,
+                    name: callName,
                     arguments: JSON.stringify((fragment as any).input)
                 }
             };

@@ -1146,6 +1146,734 @@ async function testImageInputCompatibility() {
 }
 
 // ---------------------------------------------------------------------------
+// Tool diagnostics and validation tests (I)
+// ---------------------------------------------------------------------------
+// These tests validate the proxy's handling of OpenAI tools/tool_choice
+// including validation, classification, response hardening, and diagnostics.
+
+async function testToolDiagnosticsAndValidation() {
+  describe('I. Tool diagnostics and validation', async () => {
+    // Resolve a model ID
+    let modelId = 'gpt-4o';
+    try {
+      const modelsRes = await fetchWithTimeout(`${BASE_URL}/v1/models`);
+      const modelsBody = JSON.parse(modelsRes._rawBody);
+      if (modelsBody.data && modelsBody.data.length > 0) {
+        modelId = modelsBody.data[0].id;
+      }
+    } catch {
+      // Use fallback
+    }
+
+    // I1: Valid tools are accepted (returns non-500)
+    it('I1: valid tools array is accepted', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with OK.' }],
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'get_time',
+                description: 'Return the current time.',
+                parameters: { type: 'object', properties: {}, additionalProperties: false },
+              },
+            },
+          ],
+          stream: false,
+        }),
+      });
+      assert(res.status !== 500, `I1: expected non-500, got ${res.status}`);
+    });
+
+    // I2: Malformed tool (missing type) returns 400 with OpenAI error shape
+    it('I2: tool missing type returns 400 invalid_request_error', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with OK.' }],
+          tools: [
+            {
+              function: { name: 'get_time', description: 'Return the current time.' },
+            },
+          ],
+          stream: false,
+        }),
+      });
+      assertEqual(res.status, 400, 'I2 status');
+      const body = JSON.parse(res._rawBody);
+      assert(body.error !== undefined, 'I2: should have error field');
+      assertEqual(body.error.type, 'invalid_request_error', 'I2: error.type');
+      assertEqual(body.error.code, 'invalid_tools', 'I2: error.code');
+      assert(body.error.param === 'tools', 'I2: error.param should be "tools"');
+    });
+
+    // I3: Tool with empty name returns 400
+    it('I3: tool with empty function.name returns 400', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with OK.' }],
+          tools: [
+            {
+              type: 'function',
+              function: { name: '', description: 'Empty name.' },
+            },
+          ],
+          stream: false,
+        }),
+      });
+      assertEqual(res.status, 400, 'I3 status');
+      const body = JSON.parse(res._rawBody);
+      assert(body.error !== undefined, 'I3: should have error field');
+      assertEqual(body.error.code, 'invalid_tools', 'I3: error.code');
+    });
+
+    // I4: Tool with non-function type returns 400
+    it('I4: tool with type !== "function" returns 400', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with OK.' }],
+          tools: [
+            {
+              type: 'retrieval',
+              function: { name: 'search' },
+            },
+          ],
+          stream: false,
+        }),
+      });
+      assertEqual(res.status, 400, 'I4 status');
+      const body = JSON.parse(res._rawBody);
+      assertEqual(body.error.code, 'invalid_tools', 'I4: error.code');
+    });
+
+    // I5: "tools" as non-array returns 400
+    it('I5: tools as non-array returns 400', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with OK.' }],
+          tools: 'not_an_array',
+          stream: false,
+        }),
+      });
+      assertEqual(res.status, 400, 'I5 status');
+      const body = JSON.parse(res._rawBody);
+      assertEqual(body.error.code, 'invalid_tools', 'I5: error.code');
+    });
+
+    // I6: Non-streaming response always has assistant message with role
+    it('I6: non-streaming response always has assistant message.role', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with exactly: pong' }],
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'get_time',
+                description: 'Return the current time.',
+                parameters: { type: 'object', properties: {} },
+              },
+            },
+          ],
+          stream: false,
+        }),
+      });
+      assertEqual(res.status, 200, 'I6 status');
+      const body = JSON.parse(res._rawBody);
+      assert(Array.isArray(body.choices), 'I6: choices should be array');
+      assert(body.choices.length > 0, 'I6: choices should not be empty');
+      assert(body.choices[0].message !== undefined, 'I6: message should be defined');
+      assertEqual(body.choices[0].message.role, 'assistant', 'I6: role');
+      // When no tool_calls, content should be a string (even if empty)
+      if (!body.choices[0].message.tool_calls) {
+        assert(typeof body.choices[0].message.content === 'string', 'I6: content is string when no tool_calls');
+      }
+      // finish_reason should be either "stop" or "tool_calls"
+      assert(
+        body.choices[0].finish_reason === 'stop' || body.choices[0].finish_reason === 'tool_calls',
+        `I6: finish_reason should be stop or tool_calls, got "${body.choices[0].finish_reason}"`
+      );
+    });
+
+    // I7: tool_choice:auto is accepted (returns non-500)
+    it('I7: tool_choice:auto is accepted', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with OK.' }],
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'example',
+                description: 'An example tool',
+                parameters: { type: 'object', properties: {} },
+              },
+            },
+          ],
+          tool_choice: 'auto',
+          stream: false,
+        }),
+      });
+      assert(res.status !== 500, `I7: expected non-500, got ${res.status}`);
+    });
+
+    // I8: tool_choice:"required" is accepted (returns non-500 with valid shape)
+    it('I8: tool_choice:required is accepted with valid response', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with OK.' }],
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'example',
+                description: 'An example tool',
+                parameters: { type: 'object', properties: {} },
+              },
+            },
+          ],
+          tool_choice: 'required',
+          stream: false,
+        }),
+      });
+      assert(res.status !== 500, `I8: expected non-500, got ${res.status}`);
+      if (res.status === 200) {
+        const body = JSON.parse(res._rawBody);
+        assert(Array.isArray(body.choices), 'I8: choices should be array');
+        assert(body.choices.length > 0, 'I8: choices should not be empty');
+        assertEqual(body.choices[0].message.role, 'assistant', 'I8: role');
+      }
+    });
+
+    // I9: tool_choice with specific function is accepted
+    it('I9: tool_choice with specific function is accepted', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with OK.' }],
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'example',
+                description: 'An example tool',
+                parameters: { type: 'object', properties: {} },
+              },
+            },
+          ],
+          tool_choice: { type: 'function', function: { name: 'example' } },
+          stream: false,
+        }),
+      });
+      assert(res.status !== 500, `I9: expected non-500, got ${res.status}`);
+      if (res.status === 200) {
+        const body = JSON.parse(res._rawBody);
+        assert(Array.isArray(body.choices), 'I9: choices should be array');
+        assert(body.choices.length > 0, 'I9: choices should not be empty');
+        assertEqual(body.choices[0].message.role, 'assistant', 'I9: role');
+      }
+    });
+
+    // I10: When tools are present, content should be null if tool_calls exist
+    it('I10: content is null when tool_calls are present', async () => {
+      // We simulate this by checking the response structure when the model
+      // returns tool calls. This is a structural check: if tool_calls exist,
+      // content must be null per OpenAI spec.
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with OK.' }],
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'example',
+                description: 'An example tool',
+                parameters: { type: 'object', properties: {} },
+              },
+            },
+          ],
+          stream: false,
+        }),
+      });
+      if (res.status === 200) {
+        const body = JSON.parse(res._rawBody);
+        const msg = body.choices[0].message;
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          assert(msg.content === null, `I10: content should be null when tool_calls present, got ${JSON.stringify(msg.content)}`);
+          assertEqual(body.choices[0].finish_reason, 'tool_calls', 'I10: finish_reason');
+          // Verify tool_call structure
+          const tc = msg.tool_calls[0];
+          assertEqual(tc.type, 'function', 'I10: tool_calls[0].type');
+          assertNonEmptyString(tc.function.name, 'I10: tool_calls[0].function.name');
+          assert(typeof tc.function.arguments === 'string', 'I10: tool_calls[0].function.arguments is string');
+          assertNonEmptyString(tc.id, 'I10: tool_calls[0].id');
+        }
+        // If no tool_calls, content should be a string
+        if (!msg.tool_calls || msg.tool_calls.length === 0) {
+          assert(typeof msg.content === 'string', 'I10: content is string when no tool_calls');
+          assertEqual(body.choices[0].finish_reason, 'stop', 'I10: finish_reason');
+        }
+      }
+    });
+
+    // I11: Streaming response has valid SSE structure with tool choice
+    it('I11: streaming with tools returns valid SSE', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with exactly: pong' }],
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'echo',
+                description: 'Echo a message',
+                parameters: { type: 'object', properties: {} },
+              },
+            },
+          ],
+          tool_choice: 'auto',
+          stream: true,
+        }),
+      });
+      assertEqual(res.status, 200, 'I11 status');
+      const rawText = res._rawBody;
+      assert(rawText.includes('data:'), 'I11: should have data: chunks');
+      assert(rawText.includes('[DONE]'), 'I11: should end with [DONE]');
+
+      // Verify the final chunk before [DONE] has a finish_reason
+      const lines = rawText.split('\n').filter(l => l.trim().startsWith('data: ') && !l.includes('[DONE]'));
+      let lastChunk = null;
+      for (const line of lines) {
+        try {
+          const chunk = JSON.parse(line.trim().slice(6));
+          if (chunk.choices && chunk.choices.length > 0) {
+            lastChunk = chunk;
+          }
+        } catch {
+          // skip non-JSON
+        }
+      }
+      // The last chunk with choices should have a finish_reason
+      if (lastChunk) {
+        assert(
+          lastChunk.choices[0].finish_reason === 'stop' || lastChunk.choices[0].finish_reason === 'tool_calls',
+          `I11: last chunk finish_reason should be stop or tool_calls, got "${lastChunk.choices[0].finish_reason}"`
+        );
+      }
+    });
+
+    // I12: Assistant response with content:null and tool_calls in history
+    it('I12: assistant with content:null + tool_calls in history returns non-500', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [
+            { role: 'user', content: 'What time is it?' },
+            {
+              role: 'assistant',
+              content: null,
+              tool_calls: [
+                {
+                  id: 'call_abc123',
+                  type: 'function',
+                  function: { name: 'get_time', arguments: '{}' },
+                },
+              ],
+            },
+            { role: 'tool', tool_call_id: 'call_abc123', content: '{"time":"12:00"}' },
+            { role: 'user', content: 'Thank you. What is 2+2?' },
+          ],
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'calculator',
+                description: 'Calculate math',
+                parameters: { type: 'object', properties: {} },
+              },
+            },
+          ],
+          stream: false,
+        }),
+      });
+      assert(res.status !== 500, `I12: expected non-500, got ${res.status}`);
+      if (res.status === 200) {
+        const body = JSON.parse(res._rawBody);
+        assertEqual(body.object, 'chat.completion', 'I12 object');
+        assert(Array.isArray(body.choices), 'I12: choices is array');
+        assert(body.choices.length > 0, 'I12: choices not empty');
+        assertEqual(body.choices[0].message.role, 'assistant', 'I12: role');
+      }
+    });
+
+    // I13: Streaming role delta is emitted
+    it('I13: streaming response includes role delta', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with exactly: pong' }],
+          stream: true,
+        }),
+      });
+      assertEqual(res.status, 200, 'I13 status');
+      const rawText = res._rawBody;
+      const lines = rawText.split('\n').filter(l => l.trim().startsWith('data: ') && !l.includes('[DONE]'));
+      let hasRoleDelta = false;
+      for (const line of lines) {
+        try {
+          const chunk = JSON.parse(line.trim().slice(6));
+          if (chunk.choices && chunk.choices.length > 0 &&
+              chunk.choices[0].delta && chunk.choices[0].delta.role === 'assistant') {
+            hasRoleDelta = true;
+            break;
+          }
+        } catch {
+          // skip non-JSON
+        }
+      }
+      assert(hasRoleDelta, 'I13: streaming should include a role:"assistant" delta');
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Tool choice policy tests (J)
+// ---------------------------------------------------------------------------
+// These tests validate the toolChoicePolicy setting behavior.
+//
+// Tests adapt to the server's current policy configuration:
+//   - bestEffort (default): tool_choice requests return 200 with valid response
+//   - strictPreflight: tool_choice requests return 400 with tool_choice_not_enforceable
+//   - strictAfterResponse: returns 400 with required_tool_call_missing if no tool_calls
+//
+// Each test validates the OpenAI-compatible error shape when a 400 is returned,
+// or validates the valid response shape when a 200 is returned.
+
+async function testToolChoicePolicy() {
+  describe('J. Tool choice policy', async () => {
+    // Resolve a model ID
+    let modelId = 'gpt-4o';
+    try {
+      const modelsRes = await fetchWithTimeout(`${BASE_URL}/v1/models`);
+      const modelsBody = JSON.parse(modelsRes._rawBody);
+      if (modelsBody.data && modelsBody.data.length > 0) {
+        modelId = modelsBody.data[0].id;
+      }
+    } catch {
+      // Use fallback
+    }
+
+    const toolDefs = [
+      {
+        type: 'function',
+        function: {
+          name: 'get_time',
+          description: 'Return the current time.',
+          parameters: { type: 'object', properties: {}, additionalProperties: false },
+        },
+      },
+    ];
+
+    // J1: bestEffort — tool_choice:"required" returns valid response (non-500)
+    it('J1: tool_choice:required returns non-500', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with the word OK.' }],
+          tools: toolDefs,
+          tool_choice: 'required',
+          stream: false,
+        }),
+      });
+      // bestEffort: 200; strictPreflight: 400; both are non-500
+      assert(res.status !== 500, `J1: expected non-500, got ${res.status}`);
+    });
+
+    // J2: When tool_choice:"required" returns 400, verify OpenAI error shape
+    //     (strictPreflight mode)
+    it('J2: tool_choice:required 400 has OpenAI error shape if strictPreflight', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with the word OK.' }],
+          tools: toolDefs,
+          tool_choice: 'required',
+          stream: false,
+        }),
+      });
+      if (res.status === 400) {
+        const body = JSON.parse(res._rawBody);
+        assert(body.error !== undefined, 'J2: should have error field');
+        assertEqual(body.error.type, 'invalid_request_error', 'J2: error.type');
+        assertEqual(body.error.param, 'tool_choice', 'J2: error.param');
+        assertEqual(body.error.code, 'tool_choice_not_enforceable', 'J2: error.code');
+        assertNonEmptyString(body.error.message, 'J2: error.message');
+      } else {
+        // bestEffort mode — request should succeed
+        assertEqual(res.status, 200, 'J2 status (bestEffort)');
+        const body = JSON.parse(res._rawBody);
+        assertEqual(body.object, 'chat.completion', 'J2 object');
+        assert(Array.isArray(body.choices), 'J2: choices should be array');
+        assert(body.choices.length > 0, 'J2: choices should not be empty');
+        assertEqual(body.choices[0].message.role, 'assistant', 'J2: role');
+      }
+    });
+
+    // J3: tool_choice with specific function returns non-500
+    it('J3: tool_choice:function returns non-500', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Call the get_time tool.' }],
+          tools: toolDefs,
+          tool_choice: { type: 'function', function: { name: 'get_time' } },
+          stream: false,
+        }),
+      });
+      assert(res.status !== 500, `J3: expected non-500, got ${res.status}`);
+    });
+
+    // J4: When specific function tool_choice returns 400, verify error shape
+    //     (strictPreflight mode)
+    it('J4: tool_choice:function 400 has OpenAI error shape if strictPreflight', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Call the get_time tool.' }],
+          tools: toolDefs,
+          tool_choice: { type: 'function', function: { name: 'get_time' } },
+          stream: false,
+        }),
+      });
+      if (res.status === 400) {
+        const body = JSON.parse(res._rawBody);
+        assert(body.error !== undefined, 'J4: should have error field');
+        assertEqual(body.error.type, 'invalid_request_error', 'J4: error.type');
+        assertEqual(body.error.param, 'tool_choice', 'J4: error.param');
+        assertEqual(body.error.code, 'tool_choice_not_enforceable', 'J4: error.code');
+        assertNonEmptyString(body.error.message, 'J4: error.message');
+      } else {
+        // bestEffort mode — request should succeed
+        assertEqual(res.status, 200, 'J4 status (bestEffort)');
+        const body = JSON.parse(res._rawBody);
+        assertEqual(body.object, 'chat.completion', 'J4 object');
+        assert(Array.isArray(body.choices), 'J4: choices should be array');
+      }
+    });
+
+    // J5: tool_choice:"auto" is never rejected by policy
+    it('J5: tool_choice:auto is never rejected by policy', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with OK.' }],
+          tools: toolDefs,
+          tool_choice: 'auto',
+          stream: false,
+        }),
+      });
+      // auto should never cause a policy rejection (400 with tool_choice error)
+      // and should never be a 500
+      assert(res.status !== 500, `J5: expected non-500, got ${res.status}`);
+      // If 400, should not be a tool_choice policy error
+      if (res.status === 400) {
+        const body = JSON.parse(res._rawBody);
+        assert(
+          !(body.error && body.error.param === 'tool_choice'),
+          'J5: tool_choice:auto should not be rejected with tool_choice error'
+        );
+      }
+    });
+
+    // J6: bestEffort — when tool_choice:"required" returns 200, verify valid response
+    //     with no fake tool_calls
+    it('J6: bestEffort tool_choice:required 200 has valid response, no fake tool_calls', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with exactly: pong' }],
+          tools: toolDefs,
+          tool_choice: 'required',
+          stream: false,
+        }),
+      });
+      if (res.status === 200) {
+        const body = JSON.parse(res._rawBody);
+        assertEqual(body.object, 'chat.completion', 'J6 object');
+        assert(Array.isArray(body.choices), 'J6: choices should be array');
+        assert(body.choices.length > 0, 'J6: choices should not be empty');
+        const msg = body.choices[0].message;
+        assertEqual(msg.role, 'assistant', 'J6: role');
+        // Verify response shape consistency:
+        // If tool_calls present, content must be null; if no tool_calls, content is string
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          assert(msg.content === null, 'J6: content should be null when tool_calls present');
+          assertEqual(body.choices[0].finish_reason, 'tool_calls', 'J6: finish_reason');
+          // Verify no fake tool_calls — each must have valid structure
+          for (const tc of msg.tool_calls) {
+            assertEqual(tc.type, 'function', 'J6: tool_call.type');
+            assertNonEmptyString(tc.id, 'J6: tool_call.id');
+            assertNonEmptyString(tc.function?.name, 'J6: tool_call.function.name');
+          }
+        } else {
+          assert(typeof msg.content === 'string', 'J6: content is string when no tool_calls');
+          assertEqual(body.choices[0].finish_reason, 'stop', 'J6: finish_reason');
+          // No fake tool_calls injected
+          assert(msg.tool_calls === undefined || msg.tool_calls === null, 'J6: no fake tool_calls');
+        }
+      }
+    });
+
+    // J7: Streaming with tool_choice:"required" returns non-500
+    it('J7: streaming tool_choice:required returns non-500', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with OK.' }],
+          tools: toolDefs,
+          tool_choice: 'required',
+          stream: true,
+        }),
+      });
+      // strictPreflight: 400 JSON; bestEffort: 200 SSE
+      assert(res.status !== 500, `J7: expected non-500, got ${res.status}`);
+    });
+
+    // J8: Streaming strictPreflight returns 400 JSON (not SSE)
+    it('J8: streaming strictPreflight returns 400 JSON, not SSE', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with OK.' }],
+          tools: toolDefs,
+          tool_choice: 'required',
+          stream: true,
+        }),
+      });
+      if (res.status === 400) {
+        const contentType = res.headers.get('content-type') || '';
+        // strictPreflight rejects before SSE headers, so should be JSON
+        const body = JSON.parse(res._rawBody);
+        assert(body.error !== undefined, 'J8: should have error field');
+        assertEqual(body.error.type, 'invalid_request_error', 'J8: error.type');
+        assertEqual(body.error.code, 'tool_choice_not_enforceable', 'J8: error.code');
+        // Should NOT be text/event-stream
+        assert(
+          !contentType.includes('text/event-stream'),
+          `J8: content-type should not be text/event-stream for preflight rejection, got "${contentType}"`
+        );
+      } else {
+        // bestEffort mode — should be valid SSE
+        assertEqual(res.status, 200, 'J8 status (bestEffort)');
+        const contentType = res.headers.get('content-type') || '';
+        assert(contentType.includes('text/event-stream'), 'J8: bestEffort should be SSE');
+      }
+    });
+
+    // J9: tool_choice:none returns non-500 (never requires enforcement)
+    it('J9: tool_choice:none returns non-500', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with OK.' }],
+          tools: toolDefs,
+          tool_choice: 'none',
+          stream: false,
+        }),
+      });
+      assert(res.status !== 500, `J9: expected non-500, got ${res.status}`);
+      if (res.status === 200) {
+        const body = JSON.parse(res._rawBody);
+        assertEqual(body.object, 'chat.completion', 'J9 object');
+      }
+    });
+
+    // J10: Existing normal chat behavior remains working (regression guard)
+    it('J10: normal chat without tools still works', async () => {
+      const res = await fetchWithTimeout(`${BASE_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with the word OK.' }],
+          stream: false,
+        }),
+      });
+      assertEqual(res.status, 200, 'J10 status');
+      const body = JSON.parse(res._rawBody);
+      assertEqual(body.object, 'chat.completion', 'J10 object');
+      assert(Array.isArray(body.choices), 'J10: choices should be array');
+      assert(body.choices.length > 0, 'J10: choices not empty');
+      assertEqual(body.choices[0].message.role, 'assistant', 'J10: role');
+      assert(typeof body.choices[0].message.content === 'string', 'J10: content is string');
+    });
+  });
+}
+
+/** Helper to parse response body from a wrapped fetch response. */
+async function parseBody(res) {
+  try {
+    return JSON.parse(res._rawBody);
+  } catch {
+    return {};
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main runner
 // ---------------------------------------------------------------------------
 
@@ -1170,6 +1898,8 @@ async function main() {
   await testMessageContentNormalization();
   await testAgentCompatibility();
   await testImageInputCompatibility();
+  await testToolDiagnosticsAndValidation();
+  await testToolChoicePolicy();
 
   console.log('\n' + '─'.repeat(50));
   console.log(`Results: ${passed} passed, ${failed} failed, ${skipped} skipped`);
