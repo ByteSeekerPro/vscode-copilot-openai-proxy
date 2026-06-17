@@ -4,6 +4,8 @@ scripts/.venv/
 out/
 .vscode/
 *.vsix
+*.vsix.zip
+*.zip
 .DS_Store/
 .DS_Store
 scripts/uv.lock
