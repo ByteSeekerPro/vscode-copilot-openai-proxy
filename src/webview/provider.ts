@@ -3,7 +3,7 @@ import { Server } from '../server';
 import { LmBridge } from '../lmBridge';
 import { CallHistoryStore } from '../callHistory';
 import { SessionMetricsStore, safeSerialize } from '../sessionMetrics';
-import { getPort, getAutoStart, getHost, getRequireApiKey, getApiKey } from '../config';
+import { getPort, getAutoStart, getHost, getRequireApiKey, getApiKey, getLanIPv4, isLocalHost } from '../config';
 
 /** Serializable model metadata sent to the webview. */
 interface ModelMetadata {
@@ -413,6 +413,24 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     return host === '0.0.0.0' ? '127.0.0.1' : host;
   }
 
+  /**
+   * Resolve the network-facing base URL.
+   *
+   * - `0.0.0.0` → detected LAN IPv4, or null if none found.
+   * - Local-only hosts (127.0.0.1, localhost, ::1) → null.
+   * - Concrete non-local IP → that IP directly.
+   */
+  private _resolveNetworkBaseUrl(host: string, port: number): string | null {
+    if (host === '0.0.0.0') {
+      const lanIP = getLanIPv4();
+      return lanIP ? `http://${lanIP}:${port}/v1` : null;
+    }
+    if (isLocalHost(host)) {
+      return null;
+    }
+    return `http://${host}:${port}/v1`;
+  }
+
   /** Post the current server running state and config to the webview. */
   private _postStatusUpdate() {
     const port = getPort();
@@ -427,6 +445,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       : apiKey
         ? 'configured'
         : 'missing_key';
+    const authEnabled = requireApiKey && !!apiKey;
+    const localBaseUrl = `http://127.0.0.1:${port}/v1`;
+    const networkBaseUrl = this._resolveNetworkBaseUrl(host, port);
     this._view?.webview.postMessage({
       type: 'statusUpdate',
       payload: {
@@ -434,9 +455,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         host,
         port,
         baseUrl: `http://${displayHost}:${port}/v1`,
+        localBaseUrl,
+        networkBaseUrl,
         autoStart,
         verboseLogging: this._state.verboseLogging,
         authStatus,
+        authEnabled,
       },
     });
   }
@@ -474,10 +498,21 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     const port = getPort();
     const host = getHost();
     const autoStart = getAutoStart();
+    const requireApiKey = getRequireApiKey();
+    const apiKey = getApiKey();
+    const authEnabled = requireApiKey && !!apiKey;
     const displayHost = this._displayHost(host);
     const baseUrl = `http://${displayHost}:${port}/v1`;
     const modelsUrl = `http://${displayHost}:${port}/v1/models`;
-    const curlCmd = `curl http://${displayHost}:${port}/v1/models`;
+    const localBaseUrl = `http://127.0.0.1:${port}/v1`;
+    const localModelsUrl = `http://127.0.0.1:${port}/v1/models`;
+    const networkBaseUrl = this._resolveNetworkBaseUrl(host, port);
+    const networkModelsUrl = networkBaseUrl
+      ? networkBaseUrl.replace(/\/v1$/, '/v1/models')
+      : null;
+    const authSuffix = authEnabled ? ' -H "Authorization: Bearer YOUR_API_KEY"' : '';
+    const localCurlCmd = `curl ${localModelsUrl}${authSuffix}`;
+    const networkCurlCmd = networkModelsUrl ? `curl ${networkModelsUrl}${authSuffix}` : '';
 
     const statusText = isRunning ? 'RUNNING' : 'STOPPED';
     const statusDotClass = isRunning ? 'status-dot running' : 'status-dot';
@@ -487,8 +522,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                               ? 'disabled="disabled"' : '';
     const disabledAttr = isRunning ? 'disabled="disabled"' : '';
     const autoStartLabel = autoStart ? 'Enabled' : 'Disabled';
-    const requireApiKey = getRequireApiKey();
-    const apiKey = getApiKey();
     const authStatusLabel = !requireApiKey
       ? 'Disabled'
       : apiKey
@@ -520,7 +553,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             data-port="${port}"
             data-base-url="${this._esc(baseUrl)}"
             data-models-url="${this._esc(modelsUrl)}"
-            data-curl-cmd="${this._esc(curlCmd)}"
+            data-curl-cmd="${this._esc(localCurlCmd)}"
+            data-local-base-url="${this._esc(localBaseUrl)}"
+            data-network-base-url="${this._esc(networkBaseUrl || '')}"
+            data-auth-enabled="${authEnabled}"
             data-selected-model="${this._esc(this._state.selectedModel)}"
             data-auto-start="${autoStart}">
 
@@ -532,7 +568,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           </div>
           <div class="status-details">
             <div class="detail-row">
-              <span class="detail-label">Host</span>
+              <span class="detail-label">Bind Host</span>
               <span id="detailHost" class="detail-value">${this._esc(host)}</span>
             </div>
             <div class="detail-row">
@@ -540,8 +576,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
               <span id="detailPort" class="detail-value">${port}</span>
             </div>
             <div class="detail-row">
-              <span class="detail-label">Base URL</span>
-              <span id="detailBaseUrl" class="detail-value url-value">${this._esc(baseUrl)}</span>
+              <span class="detail-label">Local URL</span>
+              <span id="detailBaseUrl" class="detail-value url-value">${this._esc(localBaseUrl)}</span>
+            </div>
+            <div id="networkUrlRow" class="detail-row" style="${networkBaseUrl ? '' : 'display:none;'}">
+              <span class="detail-label">Network URL</span>
+              <span id="detailNetworkUrl" class="detail-value url-value">${this._esc(networkBaseUrl || 'Not detected')}</span>
             </div>
             <div class="detail-row">
               <span class="detail-label">Autostart</span>
@@ -638,23 +678,47 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         <!-- Quick Copy Helpers -->
         <div class="section copy-section">
           <vscode-label>Quick Copy</vscode-label>
-          <div class="copy-row">
-            <span class="copy-label" id="copyBaseUrlLabel">${this._esc(baseUrl)}</span>
-            <vscode-button id="copyBaseUrl" appearance="icon" title="Copy Base URL">
-              <span class="codicon codicon-copy"></span>
-            </vscode-button>
+          <div id="copyLocalSection">
+            <div class="copy-sub-label">Local</div>
+            <div class="copy-row">
+              <span class="copy-label" id="copyBaseUrlLabel">${this._esc(localBaseUrl)}</span>
+              <vscode-button id="copyBaseUrl" appearance="icon" title="Copy Local Base URL">
+                <span class="codicon codicon-copy"></span>
+              </vscode-button>
+            </div>
+            <div class="copy-row">
+              <span class="copy-label" id="copyModelsUrlLabel">${this._esc(localModelsUrl)}</span>
+              <vscode-button id="copyModelsUrl" appearance="icon" title="Copy Local Models URL">
+                <span class="codicon codicon-copy"></span>
+              </vscode-button>
+            </div>
+            <div class="copy-row">
+              <span class="copy-label" id="copyCurlLabel">${this._esc(localCurlCmd)}</span>
+              <vscode-button id="copyCurl" appearance="icon" title="Copy Local cURL Command">
+                <span class="codicon codicon-copy"></span>
+              </vscode-button>
+            </div>
           </div>
-          <div class="copy-row">
-            <span class="copy-label" id="copyModelsUrlLabel">${this._esc(modelsUrl)}</span>
-            <vscode-button id="copyModelsUrl" appearance="icon" title="Copy Models URL">
-              <span class="codicon codicon-copy"></span>
-            </vscode-button>
-          </div>
-          <div class="copy-row">
-            <span class="copy-label" id="copyCurlLabel">curl ${this._esc(modelsUrl)}</span>
-            <vscode-button id="copyCurl" appearance="icon" title="Copy cURL Command">
-              <span class="codicon codicon-copy"></span>
-            </vscode-button>
+          <div id="copyNetworkSection" style="${networkBaseUrl ? '' : 'display:none;'}">
+            <div class="copy-sub-label">Network</div>
+            <div class="copy-row">
+              <span class="copy-label" id="copyNetworkBaseUrlLabel">${this._esc(networkBaseUrl || '')}</span>
+              <vscode-button id="copyNetworkBaseUrl" appearance="icon" title="Copy Network Base URL">
+                <span class="codicon codicon-copy"></span>
+              </vscode-button>
+            </div>
+            <div class="copy-row">
+              <span class="copy-label" id="copyNetworkModelsUrlLabel">${this._esc(networkModelsUrl || '')}</span>
+              <vscode-button id="copyNetworkModelsUrl" appearance="icon" title="Copy Network Models URL">
+                <span class="codicon codicon-copy"></span>
+              </vscode-button>
+            </div>
+            <div class="copy-row">
+              <span class="copy-label" id="copyNetworkCurlLabel">${this._esc(networkCurlCmd)}</span>
+              <vscode-button id="copyNetworkCurl" appearance="icon" title="Copy Network cURL Command">
+                <span class="codicon codicon-copy"></span>
+              </vscode-button>
+            </div>
           </div>
         </div>
 

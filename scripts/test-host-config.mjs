@@ -220,6 +220,84 @@ it('192.168.1.100 displays as 192.168.1.100', () => {
   assertEqual(displayHost, '192.168.1.100');
 });
 
+// --- Local / Network URL logic ---
+console.log('\nLocal / Network URL logic');
+
+function resolveNetworkBaseUrl(host, port, lanIP) {
+  if (host === '0.0.0.0') {
+    return lanIP ? `http://${lanIP}:${port}/v1` : null;
+  }
+  if (isLocalHost(host)) {
+    return null;
+  }
+  return `http://${host}:${port}/v1`;
+}
+
+it('local base URL always uses 127.0.0.1', () => {
+  const port = 9090;
+  assertEqual(`http://127.0.0.1:${port}/v1`, 'http://127.0.0.1:9090/v1');
+});
+
+it('0.0.0.0 with LAN IP gives network URL', () => {
+  const result = resolveNetworkBaseUrl('0.0.0.0', 9090, '192.168.1.50');
+  assertEqual(result, 'http://192.168.1.50:9090/v1');
+});
+
+it('0.0.0.0 without LAN IP gives null', () => {
+  const result = resolveNetworkBaseUrl('0.0.0.0', 9090, null);
+  assertEqual(result, null);
+});
+
+it('127.0.0.1 gives null network URL', () => {
+  const result = resolveNetworkBaseUrl('127.0.0.1', 9090, null);
+  assertEqual(result, null);
+});
+
+it('localhost gives null network URL', () => {
+  const result = resolveNetworkBaseUrl('localhost', 9090, null);
+  assertEqual(result, null);
+});
+
+it('concrete LAN IP gives network URL using that IP', () => {
+  const result = resolveNetworkBaseUrl('192.168.1.100', 9090, null);
+  assertEqual(result, 'http://192.168.1.100:9090/v1');
+});
+
+it('10.0.0.1 gives network URL using that IP', () => {
+  const result = resolveNetworkBaseUrl('10.0.0.1', 8080, null);
+  assertEqual(result, 'http://10.0.0.1:8080/v1');
+});
+
+// --- Curl command with auth placeholder ---
+console.log('\nCurl command with auth placeholder');
+
+it('auth-disabled curl has no Authorization header', () => {
+  const modelsUrl = 'http://127.0.0.1:9090/v1/models';
+  const authEnabled = false;
+  const authSuffix = authEnabled ? ' -H "Authorization: Bearer YOUR_API_KEY"' : '';
+  const curl = `curl ${modelsUrl}${authSuffix}`;
+  assertEqual(curl, 'curl http://127.0.0.1:9090/v1/models');
+  assert(!curl.includes('Authorization'), 'should not include Authorization');
+});
+
+it('auth-enabled curl contains YOUR_API_KEY placeholder', () => {
+  const modelsUrl = 'http://192.168.1.50:9090/v1/models';
+  const authEnabled = true;
+  const authSuffix = authEnabled ? ' -H "Authorization: Bearer YOUR_API_KEY"' : '';
+  const curl = `curl ${modelsUrl}${authSuffix}`;
+  assert(curl.includes('YOUR_API_KEY'), 'should include YOUR_API_KEY placeholder');
+  assert(!curl.includes('secret'), 'should not include real key');
+});
+
+it('auth-enabled curl never contains the real API key', () => {
+  const modelsUrl = 'http://192.168.1.50:9090/v1/models';
+  const realKey = 'sk-super-secret-key-12345';
+  const authEnabled = true;
+  const authSuffix = authEnabled ? ' -H "Authorization: Bearer YOUR_API_KEY"' : '';
+  const curl = `curl ${modelsUrl}${authSuffix}`;
+  assert(!curl.includes(realKey), 'curl must never contain the real API key');
+});
+
 // --- DEFAULT_HOST ---
 console.log('\nDEFAULT_HOST');
 

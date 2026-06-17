@@ -12,6 +12,8 @@ const statusText             = document.getElementById('statusText');
 const detailHost             = document.getElementById('detailHost');
 const detailPort             = document.getElementById('detailPort');
 const detailBaseUrl          = document.getElementById('detailBaseUrl');
+const detailNetworkUrl       = document.getElementById('detailNetworkUrl');
+const networkUrlRow          = document.getElementById('networkUrlRow');
 const detailAutostart        = document.getElementById('detailAutostart');
 const detailAuthStatus       = document.getElementById('detailAuthStatus');
 
@@ -22,10 +24,16 @@ const copyUrlBtn             = document.getElementById('copyUrl');
 // Settings
 const openSettingsBtn        = document.getElementById('openSettings');
 
-// Quick copy buttons
+// Quick copy buttons — local
 const copyBaseUrlBtn         = document.getElementById('copyBaseUrl');
 const copyModelsUrlBtn       = document.getElementById('copyModelsUrl');
 const copyCurlBtn            = document.getElementById('copyCurl');
+
+// Quick copy buttons — network
+const copyNetworkSection     = document.getElementById('copyNetworkSection');
+const copyNetworkBaseUrlBtn  = document.getElementById('copyNetworkBaseUrl');
+const copyNetworkModelsUrlBtn = document.getElementById('copyNetworkModelsUrl');
+const copyNetworkCurlBtn     = document.getElementById('copyNetworkCurl');
 
 // Model metadata
 const modelMetadataSection   = document.getElementById('modelMetadataSection');
@@ -108,6 +116,9 @@ let currentModel = document.body.dataset.selectedModel  || 'auto';
 let baseUrl      = document.body.dataset.baseUrl  || '';
 let modelsUrl    = document.body.dataset.modelsUrl || '';
 let curlCmd      = document.body.dataset.curlCmd   || '';
+let localBaseUrl = document.body.dataset.localBaseUrl || baseUrl;
+let networkBaseUrl = document.body.dataset.networkBaseUrl || '';
+let authEnabled  = document.body.dataset.authEnabled === 'true';
 
 // Raw metadata collapsed state
 let rawMetaCollapsed = false;
@@ -152,9 +163,21 @@ function updateStatus(payload) {
     if (detailPort && payload.port != null) {
         detailPort.textContent = payload.port;
     }
-    if (detailBaseUrl && payload.baseUrl) {
-        detailBaseUrl.textContent = payload.baseUrl;
+
+    // Local URL: always show 127.0.0.1
+    var effectiveLocalUrl = payload.localBaseUrl || payload.baseUrl || '';
+    if (detailBaseUrl && effectiveLocalUrl) {
+        detailBaseUrl.textContent = effectiveLocalUrl;
     }
+
+    // Network URL: show only when available
+    if (payload.networkBaseUrl) {
+        if (networkUrlRow) { networkUrlRow.style.display = ''; }
+        if (detailNetworkUrl) { detailNetworkUrl.textContent = payload.networkBaseUrl; }
+    } else {
+        if (networkUrlRow) { networkUrlRow.style.display = 'none'; }
+    }
+
     if (detailAutostart) {
         detailAutostart.textContent = payload.autoStart ? 'Enabled' : 'Disabled';
     }
@@ -172,21 +195,47 @@ function updateStatus(payload) {
                 : '';
     }
 
-    // Update URL displays
-    if (payload.baseUrl) {
-        baseUrl = payload.baseUrl;
-        modelsUrl = baseUrl.replace('/v1', '/v1/models');
-        curlCmd = 'curl ' + modelsUrl;
+    // Update local Quick Copy labels
+    if (payload.localBaseUrl || payload.baseUrl) {
+        localBaseUrl = payload.localBaseUrl || payload.baseUrl;
+        var port = payload.port || 9090;
+        var localModels = localBaseUrl.replace('/v1', '/v1/models');
+        var authSuffix = payload.authEnabled ? ' -H "Authorization: Bearer YOUR_API_KEY"' : '';
+        curlCmd = 'curl ' + localModels + authSuffix;
+        baseUrl = localBaseUrl;
+        modelsUrl = localModels;
 
-        if (serverUrl) { serverUrl.textContent = baseUrl; }
+        if (serverUrl) { serverUrl.textContent = localBaseUrl; }
 
-        const copyBaseUrlLabel = document.getElementById('copyBaseUrlLabel');
-        const copyModelsUrlLabel = document.getElementById('copyModelsUrlLabel');
-        const copyCurlLabel = document.getElementById('copyCurlLabel');
-        if (copyBaseUrlLabel) { copyBaseUrlLabel.textContent = baseUrl; }
-        if (copyModelsUrlLabel) { copyModelsUrlLabel.textContent = modelsUrl; }
+        var copyBaseUrlLabel = document.getElementById('copyBaseUrlLabel');
+        var copyModelsUrlLabel = document.getElementById('copyModelsUrlLabel');
+        var copyCurlLabel = document.getElementById('copyCurlLabel');
+        if (copyBaseUrlLabel) { copyBaseUrlLabel.textContent = localBaseUrl; }
+        if (copyModelsUrlLabel) { copyModelsUrlLabel.textContent = localModels; }
         if (copyCurlLabel) { copyCurlLabel.textContent = curlCmd; }
     }
+
+    // Update network Quick Copy section
+    if (payload.networkBaseUrl) {
+        networkBaseUrl = payload.networkBaseUrl;
+        var networkModels = networkBaseUrl.replace('/v1', '/v1/models');
+        var netAuthSuffix = payload.authEnabled ? ' -H "Authorization: Bearer YOUR_API_KEY"' : '';
+        var networkCurl = 'curl ' + networkModels + netAuthSuffix;
+
+        if (copyNetworkSection) { copyNetworkSection.style.display = ''; }
+        var copyNetworkBaseUrlLabel = document.getElementById('copyNetworkBaseUrlLabel');
+        var copyNetworkModelsUrlLabel = document.getElementById('copyNetworkModelsUrlLabel');
+        var copyNetworkCurlLabel = document.getElementById('copyNetworkCurlLabel');
+        if (copyNetworkBaseUrlLabel) { copyNetworkBaseUrlLabel.textContent = networkBaseUrl; }
+        if (copyNetworkModelsUrlLabel) { copyNetworkModelsUrlLabel.textContent = networkModels; }
+        if (copyNetworkCurlLabel) { copyNetworkCurlLabel.textContent = networkCurl; }
+    } else {
+        networkBaseUrl = '';
+        if (copyNetworkSection) { copyNetworkSection.style.display = 'none'; }
+    }
+
+    // Store auth flag for reference
+    authEnabled = !!payload.authEnabled;
 
     // Update server status in metrics
     if (mServerStatus) {
@@ -682,6 +731,22 @@ copyModelsUrlBtn?.addEventListener('click', () => {
 
 copyCurlBtn?.addEventListener('click', () => {
     vscode.postMessage({ type: 'copyToClipboard', payload: { text: curlCmd } });
+});
+
+// Quick copy buttons — network
+copyNetworkBaseUrlBtn?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'copyToClipboard', payload: { text: networkBaseUrl } });
+});
+
+copyNetworkModelsUrlBtn?.addEventListener('click', () => {
+    var nModels = networkBaseUrl ? networkBaseUrl.replace('/v1', '/v1/models') : '';
+    vscode.postMessage({ type: 'copyToClipboard', payload: { text: nModels } });
+});
+
+copyNetworkCurlBtn?.addEventListener('click', () => {
+    var nModels = networkBaseUrl ? networkBaseUrl.replace('/v1', '/v1/models') : '';
+    var nAuth = authEnabled ? ' -H "Authorization: Bearer YOUR_API_KEY"' : '';
+    vscode.postMessage({ type: 'copyToClipboard', payload: { text: 'curl ' + nModels + nAuth } });
 });
 
 // Copy raw metadata

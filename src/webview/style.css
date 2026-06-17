@@ -196,6 +196,16 @@ vscode-label {
   padding: 3px 0;
 }
 
+.copy-sub-label {
+  font-size: 0.75em;
+  opacity: 0.6;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-top: 4px;
+  margin-bottom: 2px;
+}
+
 .copy-label {
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.8em;
