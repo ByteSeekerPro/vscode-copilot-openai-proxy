@@ -19,18 +19,21 @@ A VS Code extension that exposes GitHub Copilot / VS Code Language Model API mod
 
 ## Features
 
-- Local OpenAI-compatible API at `http://127.0.0.1:9090/v1` (configurable port)
+- Local OpenAI-compatible API (default: `http://127.0.0.1:9090/v1`)
+- Configurable host and port — bind to `127.0.0.1` (local-only, default) or `0.0.0.0` (LAN/network)
+- Optional Bearer-token API-key authentication (`requireApiKey` + `apiKey`)
+- `toolChoicePolicy` for agent compatibility (`bestEffort`, `strictPreflight`, `strictAfterResponse`)
 - `GET /v1/models` — list available models
 - `POST /v1/chat/completions` — streaming and non-streaming chat completions
 - Sidebar UI with server status, model selection, metadata display, and call history
-- Configurable port and autostart
+- Quick Copy support for local/network URLs and curl commands
 - Model metadata and raw model metadata display
 - AIC pricing display when raw metadata provides it
 - Metadata-only call history (prompts and responses are never persisted)
 - In-memory session metrics
 - OpenAI agent compatibility: `tools`, `tool_choice`, `role: tool`, assistant `tool_calls`
 - Image input support for data URL images on image-capable models
-- OpenAI compatibility test script
+- OpenAI compatibility test script with host/auth environment variables
 
 ## Installation
 
@@ -57,25 +60,42 @@ code --install-extension vscode-copilot-openai-proxy-1.0.2.vsix
 ### Connection Details
 
 - **Base URL**: `http://127.0.0.1:9090/v1`
-- **API Key**: Any string (e.g., `sk-test`) — authentication is not enforced
-- **Model**: The ID shown in the proxy sidebar (e.g., `copilot-gpt-4o`)
+- **LAN Base URL** (when host is `0.0.0.0`): `http://<host-machine-lan-ip>:9090/v1`
+- **API Key**:
+  - If `requireApiKey=false` (default): any API key value may be used by clients — authentication is not enforced.
+  - If `requireApiKey=true`: clients must send `Authorization: Bearer <apiKey>`.
+- **Model**: The ID shown in the proxy sidebar (e.g., `gpt-5.3-codex`)
 
 ### List Models (curl)
+
+Without auth:
 
 ```cmd
 curl http://127.0.0.1:9090/v1/models
 ```
 
+With auth enabled:
+
+```cmd
+curl http://127.0.0.1:9090/v1/models -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+LAN access with auth:
+
+```cmd
+curl http://192.168.x.x:9090/v1/models -H "Authorization: Bearer YOUR_API_KEY"
+```
+
 ### Chat Completion (curl)
 
 ```cmd
-curl http://127.0.0.1:9090/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"copilot-gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello!\"}]}"
+curl http://127.0.0.1:9090/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"gpt-5.3-codex\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello!\"}]}"
 ```
 
 ### Content Parts (curl)
 
 ```cmd
-curl http://127.0.0.1:9090/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"copilot-gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Hello!\"}]}]}"
+curl http://127.0.0.1:9090/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"gpt-5.3-codex\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Hello!\"}]}]}"
 ```
 
 ### Image Input (curl)
@@ -83,7 +103,7 @@ curl http://127.0.0.1:9090/v1/chat/completions -H "Content-Type: application/jso
 For models with image support, send a data URL (replace the base64 placeholder with actual image data):
 
 ```cmd
-curl http://127.0.0.1:9090/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"copilot-gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBOR...\"}},{\"type\":\"text\",\"text\":\"What is in this image?\"}]}]}"
+curl http://127.0.0.1:9090/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"gpt-5.3-codex\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBOR...\"}},{\"type\":\"text\",\"text\":\"What is in this image?\"}]}]}"
 ```
 
 > Only data URLs are supported. Remote image URLs (`https://...`) return HTTP 400.
@@ -92,10 +112,15 @@ curl http://127.0.0.1:9090/v1/chat/completions -H "Content-Type: application/jso
 
 ```python
 from openai import OpenAI
+
+# If auth is disabled (default):
 client = OpenAI(base_url="http://127.0.0.1:9090/v1", api_key="sk-test")
 
+# If auth is enabled:
+client = OpenAI(base_url="http://127.0.0.1:9090/v1", api_key="YOUR_API_KEY")
+
 response = client.chat.completions.create(
-    model="copilot-gpt-4o",
+    model="gpt-5.3-codex",
     messages=[{"role": "user", "content": "Hello!"}]
 )
 print(response.choices[0].message.content)
@@ -120,8 +145,26 @@ Open extension settings via:
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `vscode-copilot-openai-proxy.port` | integer | `9090` | Local HTTP API server port (valid range: 1–65535). Invalid values fall back to `9090`. |
+| `vscode-copilot-openai-proxy.host` | string | `"127.0.0.1"` | Host/interface to bind to. `127.0.0.1` for local-only (default, secure). `0.0.0.0` to listen on all interfaces (LAN access). Valid IPv4/IPv6 addresses are accepted. Invalid values fall back to `127.0.0.1`. |
 | `vscode-copilot-openai-proxy.autoStart` | boolean | `true` | Automatically start the proxy server when the extension activates. Set to `false` to start manually via the sidebar. |
+| `vscode-copilot-openai-proxy.requireApiKey` | boolean | `false` | Require `Authorization: Bearer <apiKey>` on protected endpoints. |
+| `vscode-copilot-openai-proxy.apiKey` | string | `""` | API key for Bearer authentication. Send as `Authorization: Bearer <apiKey>`. Do not share this value. |
 | `vscode-copilot-openai-proxy.callHistoryRetentionDays` | integer | `10` | Number of days to keep call history records. Expired entries are cleaned up automatically. |
+| `vscode-copilot-openai-proxy.toolChoicePolicy` | string | `"bestEffort"` | Controls how the bridge handles OpenAI `tool_choice` values. See [Tool Choice Policy](#tool-choice-policy). |
+
+**Important:** Changing `host` or `port` requires restarting the bridge server (stop and start again). `requireApiKey`, `apiKey`, and `toolChoicePolicy` are read per request, so changes take effect immediately without restarting.
+
+### Tool Choice Policy
+
+The VS Code Language Model API cannot directly enforce OpenAI `tool_choice` values like `required` or specific function calls. The `toolChoicePolicy` setting controls how the bridge handles these cases:
+
+| Policy | Behavior |
+|--------|----------|
+| `bestEffort` | Forwards `tools` and returns a valid response even if required tool calls are missing. This is the default and works with all clients. |
+| `strictPreflight` | Rejects required/specific `tool_choice` before calling the backend, because the VS Code LM API cannot enforce it. Returns a `tool_choice_not_enforceable` error. |
+| `strictAfterResponse` | Allows the backend call, but rejects non-streaming responses when required `tool_calls` are missing. Returns a `required_tool_call_missing` error. |
+
+> **Streaming note:** `strictAfterResponse` is not fully enforceable for streaming requests and behaves as best effort with diagnostics.
 
 ### How Autostart Works
 
@@ -130,25 +173,48 @@ Open extension settings via:
 - Manual start/stop via the sidebar always works regardless of the `autoStart` setting.
 - If the server is already running, activation will not attempt a duplicate start.
 
+## LAN / Network Usage
+
+To expose the bridge to your local network:
+
+1. Open VS Code Settings and search for `vscode-copilot-openai-proxy`.
+2. Set **Host** to `0.0.0.0`.
+3. Set **Require Api Key** to `true`.
+4. Set **Api Key** to a strong token (e.g., generate with `openssl rand -hex 32`).
+5. Restart the bridge server (stop + start).
+6. Other devices on your LAN can now connect:
+   ```
+   Client base URL: http://<host-machine-lan-ip>:9090/v1
+   ```
+   With header: `Authorization: Bearer <your-token>`
+
+**Important:**
+
+- `0.0.0.0` is a bind address, not a client URL. Clients must use the host machine's actual LAN IP.
+- LAN exposure without authentication is unsafe. A warning is logged on server start when `host=0.0.0.0` and `requireApiKey=false`.
+- Windows Firewall may need to allow inbound access to the configured port.
+- Do not expose this bridge to untrusted networks.
+
 ## Sidebar
 
 The sidebar panel displays:
 
 | Section | Description |
 |---------|-------------|
-| **Server Status** | Running/stopped status, effective port, base URL, and autostart state |
-| **Server URL** | Base URL (e.g., `http://127.0.0.1:9090/v1`) with a copy button |
+| **Server Status** | Running/stopped status, host, port, base URL, network base URL (when applicable), auth status, and autostart state |
+| **Server URL** | Local base URL (e.g., `http://127.0.0.1:9090/v1`) and network base URL (when bound to `0.0.0.0`) with copy buttons |
+| **API-key Auth Status** | One of: `disabled`, `enabled, configured`, or `enabled, missing key`. The actual API key is never shown. |
 | **Active Language Model** | Model selector dropdown with refresh button |
 | **Model Metadata** | ID, name, vendor, family, version, max input tokens, and pricing info for the selected model |
 | **Raw Model Metadata** | All enumerable properties from the VS Code `LanguageModelChat` object as formatted JSON. Includes copy button and collapse/expand toggle. Sensitive-looking fields are automatically redacted. |
 | **Verbose Logging** | Checkbox to enable verbose request/response logging |
 | **Start / Stop Server** | Toggle the proxy server on or off |
 | **Open Settings** | Opens the VS Code settings page for this extension |
-| **Quick Copy** | Copy buttons for base URL, models endpoint, and a cURL command |
+| **Quick Copy** | Copy buttons for local base URL, network base URL, models endpoint, and cURL commands |
 | **Current Session Metrics** | Live in-memory metrics: request counts, endpoint breakdowns, streaming counts, token totals, average latency, per-model breakdown. Includes reset button. |
 | **Recent Calls** | 10 most recent call history entries with timestamp, endpoint, model, status, latency, streaming, and token usage. Buttons to show full history or clear history. |
 
-The port is **not** editable in the sidebar — change it through VS Code settings:
+The port and host are **not** editable in the sidebar — change them through VS Code settings:
 
 - `Ctrl+Shift+P` → **GitHub Copilot OpenAI Proxy: Open Settings**
 - Or click **Open Settings** in the sidebar
@@ -183,8 +249,12 @@ Additional sidebar settings persisted in VS Code workspace state:
 - System messages are prepended to the first user message (VS Code LM API has no system role)
 - Token counting uses `model.countTokens()` and may not match OpenAI's tokenizer exactly
 - JSON body limit is 10 MB
-- Server binds to `127.0.0.1` only (not exposed to network)
-- No authentication — any API key string is accepted
+- Default bind host is `127.0.0.1` — network binding is optional via `host=0.0.0.0` or a concrete LAN IP
+- API-key authentication is optional and disabled by default
+- If auth is disabled, clients can call all endpoints without an `Authorization` header
+- If auth is enabled, protected endpoints require `Authorization: Bearer <apiKey>`
+- VS Code LM API cannot directly enforce OpenAI `tool_choice` — use `toolChoicePolicy` to control behavior
+- Remote image URLs are not supported; only data URLs are supported
 
 ### Error Shapes
 
@@ -200,11 +270,15 @@ All errors return OpenAI-compatible JSON:
 }
 ```
 
-## Privacy
+## Privacy / Security
 
 - Call history is **metadata-only** — no prompts, responses, request bodies, or response bodies are stored
 - Image data and base64 payloads are **never persisted** — only a boolean `imageInput` flag is recorded
-- API keys and authorization headers are **not stored** by call history
+- API keys and Authorization headers are **not stored** in call history
+- API keys are **not logged**
+- The webview displays auth status (`disabled`, `enabled, configured`, `enabled, missing key`) but **never shows the actual API key**
+- LAN exposure without authentication is unsafe — a warning is logged when `host=0.0.0.0` and `requireApiKey=false`
+- Use authentication when binding to non-local interfaces
 - Session metrics are **in-memory only** and lost on VS Code restart
 
 ## Pricing
@@ -277,66 +351,6 @@ Total:                              = $0.013392
 - Pricing metadata availability depends on what VS Code / GitHub Copilot exposes at runtime
 - No external pricing lookup is performed — all pricing comes from the model object
 
-## Development
-
-```cmd
-npm install
-npm run compile
-npm run bundle
-npm run test
-npm run test:compat
-npx @vscode/vsce package
-```
-
-> `npm run test:compat` requires the extension/server to be running in VS Code on the configured port (default: 9090).
-
-## Compatibility Tests
-
-The project includes an OpenAI-compatible API test suite that verifies the local proxy behaves like a standard OpenAI API.
-
-### Prerequisites
-
-- The extension must be installed and activated in VS Code.
-- The server must be running on the configured port (default: 9090).
-- At least one GitHub Copilot / VS Code Language Model must be available.
-
-### Running Tests
-
-```cmd
-npm run test:compat
-```
-
-For a custom port:
-
-```cmd
-set PROXY_PORT=8080 && node scripts/test-compat.mjs
-```
-
-On PowerShell:
-
-```powershell
-$env:PROXY_PORT = 8080; node scripts/test-compat.mjs
-```
-
-### What Is Tested
-
-| Test Suite | Endpoint | Checks |
-|------------|----------|--------|
-| A | `GET /v1/models` | HTTP 200, JSON shape (`object: "list"`, `data` array, model fields) |
-| B | `POST /v1/chat/completions` (non-streaming) | HTTP 200, JSON shape (`id`, `object: "chat.completion"`, `choices`, `message.role`) |
-| C | `POST /v1/chat/completions` (streaming) | HTTP 200, SSE content type, `data:` chunks, `[DONE]` sentinel |
-| D | Various invalid requests | Non-2xx errors, server stability after bad requests |
-| E | Call history compatibility | API remains OpenAI-compatible after multiple sequential calls |
-| F | Message content normalization | String, `text` array, `input_text` array, `role:tool`, unsupported `audio`/malformed content returns 400 |
-| G | Agent compatibility | `role:tool`, `assistant` with `tool_calls`, `tools`, `tool_choice:auto`/function, error shapes, 400 for remote image URLs |
-| H | Image input compatibility | Data URL image accepted for capable models, remote URL returns 400, invalid data URL/MIME returns 400, no base64 data in errors |
-
-### Limitations
-
-- Tests require a running server (the extension must be active in VS Code).
-- Tests depend on available GitHub Copilot / VS Code LM models.
-- The test script uses the first available model from `GET /v1/models`.
-
 ## Call History
 
 The extension records **metadata-only** call history for every request. History persists across VS Code restarts and is stored in the extension's global storage directory as a JSON file.
@@ -366,6 +380,92 @@ Tracked metrics include: request counts (total/successful/failed), endpoint brea
 | **Persistence** | Survives VS Code restarts | Lost on restart |
 | **Retention** | Configurable (default 10 days) | Current session only |
 | **Content** | Individual entry records | Aggregate totals + per-model breakdown |
+
+## Development
+
+```cmd
+npm install
+npm run compile
+npm run lint
+npm run bundle
+npm run test:auth
+npm run test:host-config
+npm run test:settings
+npm run test:compat
+npx @vscode/vsce package
+```
+
+> `npm run test:compat` requires the extension/server to be running in VS Code on the configured port (default: 9090).
+> `npm run test:auth`, `npm run test:host-config`, and `npm run test:settings` run standalone without a server.
+
+## Compatibility Tests
+
+The project includes an OpenAI-compatible API test suite that verifies the local proxy behaves like a standard OpenAI API.
+
+### Prerequisites
+
+- The extension must be installed and activated in VS Code.
+- The server must be running on the configured port (default: 9090).
+- At least one GitHub Copilot / VS Code Language Model must be available.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PROXY_HOST` | `127.0.0.1` | Target host to test against |
+| `PROXY_PORT` | `9090` | Target port to test against |
+| `PROXY_API_KEY` | (empty) | If set, sends `Authorization: Bearer <key>` on all requests |
+
+### Running Tests
+
+Default (local, no auth):
+
+```cmd
+npm run test:compat
+```
+
+Custom port:
+
+```cmd
+set PROXY_PORT=8080 && node scripts/test-compat.mjs
+```
+
+LAN host:
+
+```cmd
+set PROXY_HOST=192.168.x.x && set PROXY_PORT=9090 && node scripts/test-compat.mjs
+```
+
+With auth:
+
+```cmd
+set PROXY_API_KEY=YOUR_API_KEY && node scripts/test-compat.mjs
+```
+
+LAN + auth:
+
+```cmd
+set PROXY_HOST=192.168.x.x && set PROXY_PORT=9090 && set PROXY_API_KEY=YOUR_API_KEY && node scripts/test-compat.mjs
+```
+
+### What Is Tested
+
+| Test Suite | Endpoint | Checks |
+|------------|----------|--------|
+| A | `GET /v1/models` | HTTP 200, JSON shape (`object: "list"`, `data` array, model fields) |
+| B | `POST /v1/chat/completions` (non-streaming) | HTTP 200, JSON shape (`id`, `object: "chat.completion"`, `choices`, `message.role`) |
+| C | `POST /v1/chat/completions` (streaming) | HTTP 200, SSE content type, `data:` chunks, `[DONE]` sentinel |
+| D | Various invalid requests | Non-2xx errors, server stability after bad requests |
+| E | Call history compatibility | API remains OpenAI-compatible after multiple sequential calls |
+| F | Message content normalization | String, `text` array, `input_text` array, `role:tool`, unsupported `audio`/malformed content returns 400 |
+| G | Agent compatibility | `role:tool`, `assistant` with `tool_calls`, `tools`, `tool_choice:auto`/function, error shapes, 400 for remote image URLs |
+| H | Image input compatibility | Data URL image accepted for capable models, remote URL returns 400, invalid data URL/MIME returns 400, no base64 data in errors |
+
+### Limitations
+
+- Tests require a running server (the extension must be active in VS Code).
+- Tests depend on available GitHub Copilot / VS Code LM models.
+- The test script uses the first available model from `GET /v1/models`.
 
 ## Fork Notice
 
