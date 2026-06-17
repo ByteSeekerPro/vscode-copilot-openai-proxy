@@ -9,12 +9,16 @@
 // Usage:
 //   node scripts/test-compat.mjs          # uses default port 9090
 //   set PROXY_PORT=8080 && node scripts/test-compat.mjs
+//   set PROXY_API_KEY=YOUR_KEY && node scripts/test-compat.mjs
+//   set PROXY_HOST=192.168.x.x && set PROXY_API_KEY=YOUR_KEY && node scripts/test-compat.mjs
 //
 // Exit code 0 = all tests passed, 1 = at least one failure.
 
 const BASE_PORT = process.env.PROXY_PORT || 9090;
-const BASE_URL = `http://127.0.0.1:${BASE_PORT}`;
+const BASE_HOST = process.env.PROXY_HOST || '127.0.0.1';
+const BASE_URL = `http://${BASE_HOST}:${BASE_PORT}`;
 const TIMEOUT_MS = 15_000;
+const API_KEY = process.env.PROXY_API_KEY || '';
 
 let passed = 0;
 let failed = 0;
@@ -64,12 +68,26 @@ function assertNonEmptyString(value, label) {
   }
 }
 
-/** Fetch with timeout. */
+/** Build common headers, merging caller headers with auth if present. */
+function buildHeaders(extra = {}) {
+  const headers = { ...extra };
+  if (API_KEY) {
+    headers['Authorization'] = `Bearer ${API_KEY}`;
+  }
+  return headers;
+}
+
+/** Fetch with timeout. Applies auth header when PROXY_API_KEY is set. */
 async function fetchWithTimeout(url, options = {}, timeoutMs = TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const mergedOptions = {
+    ...options,
+    headers: buildHeaders(options.headers || {}),
+    signal: controller.signal,
+  };
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    return await fetch(url, mergedOptions);
   } finally {
     clearTimeout(timer);
   }
@@ -84,6 +102,10 @@ async function checkServerReachable() {
     const res = await fetchWithTimeout(`${BASE_URL}/v1/models`, { method: 'GET' }, 5000);
     if (res.ok || res.status === 500) {
       // 500 means server is running but LM bridge may not be ready — still reachable
+      return true;
+    }
+    if (res.status === 401 || res.status === 403) {
+      // Server is reachable, but auth failed — still reachable
       return true;
     }
   } catch {
@@ -1880,6 +1902,7 @@ async function parseBody(res) {
 async function main() {
   console.log('OpenAI Compatibility Tests');
   console.log(`Server: ${BASE_URL}`);
+  console.log(`Auth: ${API_KEY ? 'enabled' : 'disabled'}`);
   console.log('─'.repeat(50));
 
   // Check reachability
@@ -1888,6 +1911,27 @@ async function main() {
     console.log(`\n  ✗ Server not reachable at ${BASE_URL}`);
     console.log('  Ensure the extension is running and the server is started.\n');
     process.exit(1);
+  }
+
+  // Pre-flight auth check: warn early if server rejects auth
+  if (API_KEY) {
+    try {
+      const preflight = await fetchWithTimeout(`${BASE_URL}/v1/models`, { method: 'GET' }, 5000);
+      if (preflight.status === 401 || preflight.status === 403) {
+        let reason = '';
+        try {
+          const body = JSON.parse(preflight._rawBody);
+          if (body.error && body.error.message) {
+            reason = ` — ${body.error.message}`;
+          }
+        } catch { /* ignore parse failure */ }
+        console.log(`\n  ✗ Authentication failed (HTTP ${preflight.status})${reason}`);
+        console.log('  Check that PROXY_API_KEY matches the server apiKey setting.\n');
+        process.exit(1);
+      }
+    } catch {
+      // Ignore — will be caught by individual test failures
+    }
   }
 
   await testModelsEndpoint();

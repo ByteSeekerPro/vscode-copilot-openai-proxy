@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import * as net from 'net';
+import * as os from 'os';
 import * as vscode from 'vscode';
 import { LmBridge, validateMessages, ContentValidationError, hasImageContent } from './lmBridge';
 import {
@@ -11,7 +12,8 @@ import {
   buildToolChoiceNotEnforceableError,
   buildRequiredToolCallMissingError,
 } from './toolHelpers';
-import { getToolChoicePolicy } from './config';
+import { getToolChoicePolicy, DEFAULT_HOST, isLocalHost, getRequireApiKey, getApiKey } from './config';
+import { validateAuth } from './auth';
 import { CallHistoryStore, CallHistoryEntry } from './callHistory';
 import { SessionMetricsStore } from './sessionMetrics';
 import { calculateCost, formatCostUsd } from './pricing';
@@ -50,6 +52,17 @@ export class Server {
   private registerRoutes() {
     this.app.get('/v1/models', async (_req, res) => {
       const startTime = Date.now();
+
+      // Auth check — reads settings at request time so changes apply without restart.
+      const authResult = validateAuth(_req, getRequireApiKey(), getApiKey());
+      if (!authResult.ok) {
+        this.outputChannel.appendLine(
+          `[Auth] GET /v1/models — ${authResult.status} ${authResult.error.error.code}`
+        );
+        res.status(authResult.status).json(authResult.error);
+        return;
+      }
+
       try {
         const models = await this.lmBridge.getModels();
         res.json({
@@ -81,6 +94,17 @@ export class Server {
 
     this.app.post('/v1/chat/completions', async (req, res) => {
       const startTime = Date.now();
+
+      // Auth check — reads settings at request time so changes apply without restart.
+      const authResult = validateAuth(req, getRequireApiKey(), getApiKey());
+      if (!authResult.ok) {
+        this.outputChannel.appendLine(
+          `[Auth] POST /v1/chat/completions — ${authResult.status} ${authResult.error.error.code}`
+        );
+        res.status(authResult.status).json(authResult.error);
+        return;
+      }
+
       const { model, messages, stream, temperature, max_tokens, tools, tool_choice } = req.body;
 
       if (this.verbose) {
@@ -602,16 +626,45 @@ export class Server {
     return this.isRunning;
   }
 
-  public async start(port: number): Promise<void> {
+  public async start(port: number, host: string = DEFAULT_HOST): Promise<void> {
     if (this.isRunning) {
       return;
     }
 
     return new Promise((resolve, reject) => {
       try {
-        this.server = this.app.listen(port, '127.0.0.1', () => {
+        this.server = this.app.listen(port, host, () => {
           this.isRunning = true;
-          this.outputChannel.appendLine(`Server started on http://127.0.0.1:${port}`);
+          const displayHost = host === '0.0.0.0' ? '127.0.0.1' : host;
+          this.outputChannel.appendLine(`Server started on http://${displayHost}:${port}`);
+          if (host === '0.0.0.0') {
+            this.outputChannel.appendLine(`  Bind host: 0.0.0.0 (all interfaces)`);
+            this.outputChannel.appendLine(`  Local URL: http://127.0.0.1:${port}`);
+            try {
+              const interfaces = os.networkInterfaces();
+              for (const entries of Object.values(interfaces)) {
+                if (!entries) { continue; }
+                for (const entry of entries) {
+                  if (entry.family === 'IPv4' && !entry.internal) {
+                    this.outputChannel.appendLine(`  Network URL: http://${entry.address}:${port}`);
+                  }
+                }
+              }
+            } catch {
+              // Non-fatal — LAN IP display is best-effort.
+            }
+          }
+          // API-key auth status logging
+          const requireKey = getRequireApiKey();
+          const configuredKey = getApiKey();
+          this.outputChannel.appendLine(
+            `API-key auth: ${requireKey ? 'enabled' : 'disabled'}${requireKey ? (configuredKey ? ' (configured)' : ' (no key configured!)') : ''}`
+          );
+          if (!isLocalHost(host) && !requireKey) {
+            this.outputChannel.appendLine(
+              'Security warning: the bridge is reachable on a non-local interface and API-key authentication is disabled.'
+            );
+          }
           resolve();
         });
 

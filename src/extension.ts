@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { LmBridge } from './lmBridge';
 import { Server } from './server';
 import { SidebarProvider } from './webview/provider';
-import { getPort, getAutoStart } from './config';
+import { getPort, getAutoStart, getHost } from './config';
 import { CallHistoryStore } from './callHistory';
 import { SessionMetricsStore } from './sessionMetrics';
 import { formatCostUsd } from './pricing';
@@ -17,9 +17,10 @@ export function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('Copilot OpenAI Proxy');
   context.subscriptions.push(outputChannel);
 
-  // Read the effective port from configuration (validated with fallback).
-  // Port is always config-driven; no sidebar editing of port.
+  // Read the effective port and host from configuration (validated with fallback).
+  // Port and host are always config-driven; no sidebar editing of port/host.
   const effectivePort = getPort();
+  const effectiveHost = getHost();
 
   const state: State = {
     port: effectivePort,
@@ -186,7 +187,7 @@ export function activate(context: vscode.ExtensionContext) {
   // Autostart: start the server automatically if autoStart is enabled.
   if (getAutoStart()) {
     outputChannel.appendLine('Auto-start enabled — starting server…');
-    server.start(effectivePort).catch((err) => {
+    server.start(effectivePort, effectiveHost).catch((err) => {
       outputChannel.appendLine(`Auto-start failed: ${err.message ?? err}`);
     });
   }

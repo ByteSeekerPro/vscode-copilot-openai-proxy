@@ -9,9 +9,11 @@ const statusDot              = document.getElementById('statusDot');
 const statusText             = document.getElementById('statusText');
 
 // Status detail elements
+const detailHost             = document.getElementById('detailHost');
 const detailPort             = document.getElementById('detailPort');
 const detailBaseUrl          = document.getElementById('detailBaseUrl');
 const detailAutostart        = document.getElementById('detailAutostart');
+const detailAuthStatus       = document.getElementById('detailAuthStatus');
 
 // URL display
 const serverUrl              = document.getElementById('serverUrl');
@@ -144,6 +146,9 @@ function updateStatus(payload) {
     }
 
     // Update status details
+    if (detailHost && payload.host) {
+        detailHost.textContent = payload.host;
+    }
     if (detailPort && payload.port != null) {
         detailPort.textContent = payload.port;
     }
@@ -152,6 +157,19 @@ function updateStatus(payload) {
     }
     if (detailAutostart) {
         detailAutostart.textContent = payload.autoStart ? 'Enabled' : 'Disabled';
+    }
+    if (detailAuthStatus && payload.authStatus) {
+        const authLabels = {
+            disabled: 'Disabled',
+            configured: 'Enabled, configured',
+            missing_key: 'Enabled, missing key!',
+        };
+        detailAuthStatus.textContent = authLabels[payload.authStatus] || payload.authStatus;
+        detailAuthStatus.style.color = payload.authStatus === 'missing_key'
+            ? 'var(--vscode-charts-red)'
+            : payload.authStatus === 'configured'
+                ? 'var(--vscode-charts-green)'
+                : '';
     }
 
     // Update URL displays

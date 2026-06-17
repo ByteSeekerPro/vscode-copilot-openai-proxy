@@ -3,7 +3,7 @@ import { Server } from '../server';
 import { LmBridge } from '../lmBridge';
 import { CallHistoryStore } from '../callHistory';
 import { SessionMetricsStore, safeSerialize } from '../sessionMetrics';
-import { getPort, getAutoStart } from '../config';
+import { getPort, getAutoStart, getHost, getRequireApiKey, getApiKey } from '../config';
 
 /** Serializable model metadata sent to the webview. */
 interface ModelMetadata {
@@ -77,7 +77,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         case 'start':
           try {
             const port = getPort();
-            await this._server.start(port);
+            const host = getHost();
+            await this._server.start(port, host);
           } catch (err: any) {
             this._outputChannel.appendLine(`Failed to start server: ${err.message}`);
             this._view?.webview.postMessage({ type: 'error', payload: err.message });
@@ -407,18 +408,35 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** Resolve the display URL host. For 0.0.0.0 bind, show 127.0.0.1. */
+  private _displayHost(host: string): string {
+    return host === '0.0.0.0' ? '127.0.0.1' : host;
+  }
+
   /** Post the current server running state and config to the webview. */
   private _postStatusUpdate() {
     const port = getPort();
+    const host = getHost();
     const autoStart = getAutoStart();
+    const requireApiKey = getRequireApiKey();
+    const apiKey = getApiKey();
+    const displayHost = this._displayHost(host);
+    // Auth status: never expose the actual key value.
+    const authStatus = !requireApiKey
+      ? 'disabled'
+      : apiKey
+        ? 'configured'
+        : 'missing_key';
     this._view?.webview.postMessage({
       type: 'statusUpdate',
       payload: {
         isRunning: this._server.isStarted(),
+        host,
         port,
-        baseUrl: `http://127.0.0.1:${port}/v1`,
+        baseUrl: `http://${displayHost}:${port}/v1`,
         autoStart,
         verboseLogging: this._state.verboseLogging,
+        authStatus,
       },
     });
   }
@@ -454,10 +472,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
     const isRunning = this._server.isStarted();
     const port = getPort();
+    const host = getHost();
     const autoStart = getAutoStart();
-    const baseUrl = `http://127.0.0.1:${port}/v1`;
-    const modelsUrl = `http://127.0.0.1:${port}/v1/models`;
-    const curlCmd = `curl http://127.0.0.1:${port}/v1/models`;
+    const displayHost = this._displayHost(host);
+    const baseUrl = `http://${displayHost}:${port}/v1`;
+    const modelsUrl = `http://${displayHost}:${port}/v1/models`;
+    const curlCmd = `curl http://${displayHost}:${port}/v1/models`;
 
     const statusText = isRunning ? 'RUNNING' : 'STOPPED';
     const statusDotClass = isRunning ? 'status-dot running' : 'status-dot';
@@ -467,6 +487,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                               ? 'disabled="disabled"' : '';
     const disabledAttr = isRunning ? 'disabled="disabled"' : '';
     const autoStartLabel = autoStart ? 'Enabled' : 'Disabled';
+    const requireApiKey = getRequireApiKey();
+    const apiKey = getApiKey();
+    const authStatusLabel = !requireApiKey
+      ? 'Disabled'
+      : apiKey
+        ? 'Enabled, configured'
+        : 'Enabled, missing key!';
 
     // Always include 'auto' as the first option. If real models have been
     // discovered they follow; otherwise only 'auto' is shown.
@@ -505,6 +532,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           </div>
           <div class="status-details">
             <div class="detail-row">
+              <span class="detail-label">Host</span>
+              <span id="detailHost" class="detail-value">${this._esc(host)}</span>
+            </div>
+            <div class="detail-row">
               <span class="detail-label">Port</span>
               <span id="detailPort" class="detail-value">${port}</span>
             </div>
@@ -515,6 +546,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             <div class="detail-row">
               <span class="detail-label">Autostart</span>
               <span id="detailAutostart" class="detail-value">${autoStartLabel}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">API-key auth</span>
+              <span id="detailAuthStatus" class="detail-value">${this._esc(authStatusLabel)}</span>
             </div>
           </div>
         </div>
@@ -527,7 +562,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
               <span class="codicon codicon-copy"></span>
             </vscode-button>
           </div>
-          <p class="hint">Change the port in extension settings.</p>
+          <p class="hint">Change host and port in extension settings.</p>
         </div>
 
         <!-- Model Selection -->

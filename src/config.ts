@@ -1,10 +1,14 @@
 import * as vscode from 'vscode';
+import * as os from 'os';
 
 /** Extension configuration namespace matching package.json contributes.configuration. */
 const SECTION = 'vscode-copilot-openai-proxy';
 
 /** Default port used when the configured value is invalid or unset. */
 export const DEFAULT_PORT = 9090;
+
+/** Default host used when the configured value is invalid or unset. */
+export const DEFAULT_HOST = '127.0.0.1';
 
 /** Default call-history retention in days. */
 export const DEFAULT_RETENTION_DAYS = 10;
@@ -85,4 +89,110 @@ export function getToolChoicePolicy(): ToolChoicePolicy {
   }
 
   return DEFAULT_TOOL_CHOICE_POLICY;
+}
+
+// ---------------------------------------------------------------------------
+// Host configuration
+// ---------------------------------------------------------------------------
+
+/** Regex pattern that matches valid IPv4 and IPv6 addresses, plus localhost. */
+const HOST_PATTERN = /^(localhost|(\d{1,3}\.){3}\d{1,3}|[0-9a-fA-F:]+)$/;
+
+/**
+ * Validate a host string.
+ *
+ * Accepts `localhost`, valid IPv4 addresses, and valid IPv6 addresses.
+ * Returns `true` if the value is a usable host string.
+ */
+export function isValidHost(value: unknown): value is string {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return false;
+  }
+  return HOST_PATTERN.test(trimmed);
+}
+
+/**
+ * Get the effective server host from VS Code settings.
+ *
+ * Validates the value. Invalid values fall back to {@link DEFAULT_HOST}
+ * and a warning is logged.
+ */
+export function getHost(): string {
+  const config = vscode.workspace.getConfiguration(SECTION);
+  const raw = config.get<string>('host', DEFAULT_HOST);
+
+  if (!isValidHost(raw)) {
+    vscode.window.showWarningMessage(
+      `[Copilot OpenAI Proxy] Invalid host "${raw}". Falling back to default host ${DEFAULT_HOST}.`
+    );
+    return DEFAULT_HOST;
+  }
+
+  return raw.trim();
+}
+
+// ---------------------------------------------------------------------------
+// API-key authentication configuration
+// ---------------------------------------------------------------------------
+
+/** Default requireApiKey value when the setting is missing. */
+const DEFAULT_REQUIRE_API_KEY = false;
+
+/**
+ * Get whether API-key authentication is required for protected endpoints.
+ */
+export function getRequireApiKey(): boolean {
+  const config = vscode.workspace.getConfiguration(SECTION);
+  return config.get<boolean>('requireApiKey', DEFAULT_REQUIRE_API_KEY);
+}
+
+/**
+ * Get the configured API key, trimmed.
+ *
+ * Returns empty string when unset. Never logs the value.
+ */
+export function getApiKey(): string {
+  const config = vscode.workspace.getConfiguration(SECTION);
+  const raw = config.get<string>('apiKey', '');
+  return typeof raw === 'string' ? raw.trim() : '';
+}
+
+// ---------------------------------------------------------------------------
+// Host classification
+// ---------------------------------------------------------------------------
+
+/** Local-only hosts that do not expose the bridge to the network. */
+const LOCAL_HOSTS: ReadonlySet<string> = new Set(['127.0.0.1', 'localhost', '::1']);
+
+/**
+ * Returns `true` when the given host is a local-only bind address.
+ */
+export function isLocalHost(host: string): boolean {
+  return LOCAL_HOSTS.has(host);
+}
+
+/**
+ * Return the first non-internal IPv4 address found on this machine, or null.
+ *
+ * Safe — returns null if no suitable interface is found.
+ */
+export function getLanIPv4(): string | null {
+  try {
+    const interfaces = os.networkInterfaces();
+    for (const entries of Object.values(interfaces)) {
+      if (!entries) { continue; }
+      for (const entry of entries) {
+        if (entry.family === 'IPv4' && !entry.internal) {
+          return entry.address;
+        }
+      }
+    }
+  } catch {
+    // Non-fatal — LAN IP detection is best-effort.
+  }
+  return null;
 }

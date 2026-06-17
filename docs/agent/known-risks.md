@@ -13,7 +13,7 @@
 
 | Area | File(s) | Concern |
 |---|---|---|
-| No API authentication | [`src/server.ts`](src/server.ts:29) | The server accepts any API key. Any local process can use the service. This is intentional (localhost-only) but agents should not add network exposure. |
+| Optional API authentication | [`src/server.ts`](src/server.ts), [`src/auth.ts`](src/auth.ts) | API-key auth is disabled by default (`requireApiKey=false`). When disabled, any local process can use the service. Enable `requireApiKey` when exposing on non-local interfaces (`0.0.0.0`). Constant-time comparison via `crypto.timingSafeEqual`. |
 | CORS enabled for all origins | [`src/server.ts`](src/server.ts:20) | `cors()` with no options allows all origins. Acceptable for localhost service but risky if server is ever exposed. |
 | Express JSON parsing | [`src/server.ts`](src/server.ts:19) | 10 MB body limit on `express.json()` to accommodate large agent conversation histories. Requests exceeding 10 MB return HTTP 413. |
 

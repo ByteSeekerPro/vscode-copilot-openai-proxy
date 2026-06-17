@@ -37,6 +37,7 @@ External clients (curl, Python, LangChain) ──► http://127.0.0.1:9090/v1
 | Module | File | Responsibility |
 |---|---|---|
 | Extension | [`src/extension.ts`](src/extension.ts) | Lifecycle management, state persistence, wiring components together |
+| Auth | [`src/auth.ts`](src/auth.ts) | API-key Bearer-token authentication validation with constant-time comparison |
 | Server | [`src/server.ts`](src/server.ts) | Express HTTP server, OpenAI-compatible API routes, SSE streaming, tool request/response diagnostics |
 | LmBridge | [`src/lmBridge.ts`](src/lmBridge.ts) | Translates OpenAI message format to VS Code LM API, handles token counting, maps tools, image handling |
 | ToolHelpers | [`src/toolHelpers.ts`](src/toolHelpers.ts) | Tool request validation, tool_choice classification, safe diagnostics, tool_call ID generation |
@@ -59,6 +60,7 @@ SidebarProvider  ──uses──►  LmBridge (getModels)
 
 Server  ──uses──►  LmBridge (streamChatCompletion, getModels)
 Server  ──uses──►  ToolHelpers (validateTools, buildRequestDiagnostics, buildResponseDiagnostics)
+Server  ──uses──►  Auth (validateAuth) + Config (getRequireApiKey, getApiKey)
 
 LmBridge  ──uses──►  vscode.lm API (selectChatModels, sendRequest, countTokens)
 LmBridge  ──uses──►  ToolHelpers (generateToolCallId)
@@ -94,12 +96,13 @@ No circular dependencies. Data flows unidirectionally: **HTTP request → Server
 | Fix model discovery | `src/lmBridge.ts` → `getModels()`, `src/webview/provider.ts` → `_refreshModels()` |
 | UI changes | `src/webview/main.js`, `src/webview/style.css`, `src/webview/provider.ts` → `_getHtmlForWebview()` |
 | Tool/function calling | `src/lmBridge.ts` (tool mapping), `src/server.ts` (tool_call SSE chunks), `src/toolHelpers.ts` (validation, classification, diagnostics) |
+| Auth/API-key changes | `src/auth.ts` (validation logic), `src/config.ts` (settings), `src/server.ts` (middleware), `src/webview/provider.ts` (status display) |
 
 ## Architectural Boundaries and Assumptions
 
 - **Single-model proxy**: The selected model in the sidebar is the model that processes ALL requests, regardless of the `model` field in incoming API requests.
 - **Localhost only**: Server binds to `127.0.0.1` — not accessible from network.
-- **No authentication**: API key is ignored; any string is accepted.
+- **Optional authentication**: API-key authentication is available but disabled by default. When `requireApiKey=true`, protected endpoints require `Authorization: Bearer <apiKey>`.
 - **Copilot dependency**: Requires `github.copilot-chat` extension installed and active.
 - **System message workaround**: VS Code LM API has no system role; system messages are prepended to the first user message with `[System Instructions]` wrapper.
 - **Token counting is approximate**: Uses `model.countTokens()` which may not perfectly match OpenAI's tokenizer.

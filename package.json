@@ -68,6 +68,11 @@
           "maximum": 65535,
           "description": "Local HTTP API server port."
         },
+        "vscode-copilot-openai-proxy.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Host/interface for the local OpenAI-compatible bridge server to bind to. Use 127.0.0.1 for local-only access. Use 0.0.0.0 to listen on all interfaces. Exposing the bridge to a network can allow other devices to use your VS Code Language Model access."
+        },
         "vscode-copilot-openai-proxy.callHistoryRetentionDays": {
           "type": "integer",
           "default": 10,
@@ -88,6 +93,16 @@
           ],
           "default": "bestEffort",
           "description": "Controls how the bridge handles OpenAI tool_choice values that require tool calls when the VS Code Language Model API cannot enforce them."
+        },
+        "vscode-copilot-openai-proxy.requireApiKey": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require clients to send Authorization: Bearer <apiKey> when calling the OpenAI-compatible bridge endpoints."
+        },
+        "vscode-copilot-openai-proxy.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key required when requireApiKey is enabled. Send it as Authorization: Bearer <apiKey>. Do not share this value."
         }
       }
     },
@@ -120,7 +135,10 @@
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
     "test": "npm run bundle",
-    "test:compat": "node scripts/test-compat.mjs"
+    "test:compat": "node scripts/test-compat.mjs",
+    "test:host-config": "node scripts/test-host-config.mjs",
+    "test:auth": "node scripts/test-auth.mjs",
+    "test:settings": "node scripts/test-settings.mjs"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
